@@ -1,0 +1,30 @@
+{
+  "trading": {
+    "symbol": "BTC-USD",
+    "interval": "1h",
+    "dca_drop_percent": 3.0,
+    "dca_order_size_usd": 100.0,
+    "atr_multiplier": 2.0,
+    "max_drawdown_percent": 25.0
+  },
+  "runtime": {
+    "loop_interval_seconds": 60,
+    "max_cycles": 1
+  },
+  "logging": {
+    "level": "INFO"
+  },
+  "notifications": {
+    "telegram_enabled": false,
+    "gmail_enabled": false
+  },
+  "llm": {
+    "enabled": false,
+    "model": "gpt-5.4-mini"
+  },
+  "execution": {
+    "paper_trading_enabled": true,
+    "initial_cash_usd": 10000.0
+  }
+}
+

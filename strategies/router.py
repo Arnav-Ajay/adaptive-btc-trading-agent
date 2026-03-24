@@ -1,0 +1,24 @@
+"""Strategy selection and orchestration."""
+
+from __future__ import annotations
+
+from config.schema import AppConfig
+from strategies.dca import DCAStrategy
+from strategies.swing_atr import SwingATRStrategy
+from utils.models import MarketRegime
+
+
+class StrategyRouter:
+    """Route market regimes to concrete strategy implementations."""
+
+    def __init__(self, config: AppConfig) -> None:
+        """Initialize the strategy router."""
+        self.config = config
+        self.dca = DCAStrategy(config=config)
+        self.swing = SwingATRStrategy(config=config)
+
+    def select(self, regime: MarketRegime) -> DCAStrategy | SwingATRStrategy:
+        """Select a strategy for the current market regime."""
+        if regime is MarketRegime.BULLISH:
+            return self.swing
+        return self.dca
