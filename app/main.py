@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import logging
 
-from backtest.metrics import summarize_portfolio
-from config.settings import load_config
-from data.data_normalizer import MarketDataService
-from execution.order_manager import OrderManager
-from monitoring.alerts import NotificationManager
-from monitoring.logger import configure_logging
-from scheduler.job_runner import sleep_until_next_cycle
-from strategies.router import StrategyRouter
-from utils.models import AgentContext
+from app.backtest.metrics import summarize_portfolio
+from app.config.settings import load_config
+from app.data.data_normalizer import MarketDataService
+from app.execution.order_manager import OrderManager
+from app.monitoring.alerts import NotificationManager
+from app.monitoring.logger import configure_logging
+from app.scheduler.job_runner import sleep_until_next_cycle
+from app.strategies.router import StrategyRouter
+from app.utils.models import AgentContext
 
 
 def run() -> None:
@@ -26,7 +26,12 @@ def run() -> None:
     order_manager = OrderManager(config=config)
     notifier = NotificationManager(config=config)
 
-    logger.info("Starting agent with max_cycles=%s", config.runtime.max_cycles)
+    logger.info(
+        "Starting agent with data_lake=%s candle_interval=%s max_cycles=%s",
+        config.data.data_lake_path,
+        config.ingestion.interval,
+        config.runtime.max_cycles,
+    )
 
     cycle = 0
     while config.runtime.max_cycles is None or cycle < config.runtime.max_cycles:

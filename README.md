@@ -1,22 +1,45 @@
 # adaptive-btc-trading-agent
 
-Production-oriented scaffolding for a modular Bitcoin trading agent with:
+This repository currently runs two working services:
 
-- config-driven behavior
-- deterministic strategy core
-- optional LLM advisory layer
-- paper trading first
-- logging, alerting, and backtesting hooks
+- a Coinbase market data ingestor
+- a local-data paper-trading runtime
 
-## Current Status
+The ingestor fetches `BTC-USD` `1m` candles from Coinbase on a fixed schedule, deduplicates overlapping windows, writes partitioned parquet files, updates a state file, and emits both console and file logs.
 
-Phase 1 scaffolding is in place:
+The trading runtime reads recent candles from the local parquet data lake, computes indicators, selects a strategy, and executes paper trades against an in-memory broker.
 
-- package structure created
-- runnable main loop skeleton
-- config loader with local cache fallback
-- strategy router and paper broker interfaces
-- monitoring, backtest, and LLM advisory stubs
+## What Works
+
+- Coinbase candle ingestion with retries
+- 30-minute scheduled ingestion with APScheduler
+- partitioned parquet storage under `data_lake/`
+- deduplication by candle timestamp
+- ingestion state tracking
+- Dockerized ingestor service with healthcheck
+- ingestion logs to stdout and `logs/ingestion/ingestion.log`
+- local parquet-backed market data reader
+- indicator computation: ATR, RSI, EMA, MACD
+- regime detection and strategy routing
+- paper trade execution
+
+## Data Layout
+
+```text
+data_lake/
+  symbol=BTC-USD/
+    interval=1m/
+      year=2026/
+        month=03/
+          day=24/
+            data.parquet
+  state/
+    coinbase_btc_usd_1m.json
+
+logs/
+  ingestion/
+    ingestion.log
+```
 
 ## Quick Start
 
@@ -24,23 +47,40 @@ Phase 1 scaffolding is in place:
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
+```
+
+Run the ingestor:
+
+```bash
+python -m app.scheduler.collector_runner
+```
+
+Run the paper-trading loop:
+
+```bash
 python -m app.main
 ```
 
-The default `.env` is configured to run a single cycle in paper-trading mode.
+## Docker
 
-## Core Loop
+Start the scheduled ingestor:
 
-```text
-Load config -> Fetch market data -> Compute indicators -> Detect regime
--> Select strategy -> Generate signals -> LLM review -> Validate signals
--> Execute paper orders -> Log and notify
+```bash
+docker compose up -d market-data-ingestor
 ```
 
-## Next Build Phases
+Watch logs:
 
-1. Implement live market data ingestion with `yfinance` and exchange adapters.
-2. Expand indicator coverage and strategy logic.
-3. Add robust persistence, reporting, and tests.
-4. Add Dockerized deployment and cloud runtime hardening.
+```bash
+docker compose logs -f market-data-ingestor
+```
 
+Check container health:
+
+```bash
+docker inspect --format "{{json .State.Health}}" adaptive-btc-market-data-ingestor
+```
+
+## Flow
+
+See [docs/current-flow.md](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/docs/current-flow.md) for the current runtime flow.

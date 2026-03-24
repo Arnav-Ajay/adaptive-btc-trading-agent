@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-from config.settings import load_config
-from features.rsi import calculate_rsi
+from app.config.settings import load_config
+from app.features.rsi import calculate_rsi
 
 
 def test_load_config_returns_symbol() -> None:
     """Ensure the config loader returns the default trading symbol."""
     config = load_config()
     assert config.trading.symbol == "BTC-USD"
+    assert config.ingestion.provider == "coinbase"
+    assert config.data.data_lake_path == "data_lake"
 
 
 def test_rsi_default_value_for_short_series() -> None:

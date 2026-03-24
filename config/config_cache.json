@@ -1,11 +1,26 @@
 {
   "trading": {
     "symbol": "BTC-USD",
-    "interval": "1h",
     "dca_drop_percent": 3.0,
     "dca_order_size_usd": 100.0,
     "atr_multiplier": 2.0,
     "max_drawdown_percent": 25.0
+  },
+  "data": {
+    "data_lake_path": "data_lake",
+    "trading_lookback": 500
+  },
+  "ingestion": {
+    "provider": "coinbase",
+    "enabled": true,
+    "interval": "1m",
+    "schedule_minutes": 30,
+    "overlap_minutes": 90,
+    "fetch_limit": 300,
+    "max_retries": 3,
+    "retry_delay_seconds": 5,
+    "state_path": "data_lake/state/coinbase_btc_usd_1m.json",
+    "health_max_staleness_minutes": 75
   },
   "runtime": {
     "loop_interval_seconds": 60,
@@ -27,4 +42,3 @@
     "initial_cash_usd": 10000.0
   }
 }
-

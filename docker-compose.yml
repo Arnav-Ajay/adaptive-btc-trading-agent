@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   trading-agent:
     build: .
@@ -10,3 +8,21 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./config:/app/config
+      - ./data_lake:/app/data_lake
+  market-data-ingestor:
+    build: .
+    container_name: adaptive-btc-market-data-ingestor
+    restart: unless-stopped
+    command: ["python", "-m", "app.scheduler.collector_runner"]
+    env_file:
+      - .env
+    volumes:
+      - ./logs:/app/logs
+      - ./config:/app/config
+      - ./data_lake:/app/data_lake
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.scheduler.healthcheck"]
+      interval: 5m
+      timeout: 15s
+      retries: 3
+      start_period: 2m

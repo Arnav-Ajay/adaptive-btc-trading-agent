@@ -1,7 +1,12 @@
-pandas
 numpy
-yfinance
+pandas
+pyarrow
+apscheduler
+
+coinbase-advanced-py
+
+pytest
 requests
 python-dotenv
-pytest
-pyarrow
+
+matplotlib
