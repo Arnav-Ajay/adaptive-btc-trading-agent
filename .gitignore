@@ -8,5 +8,5 @@ venv/
 dist/
 build/
 *.pyc
-logs/*.log
+logs
 data_lake/
