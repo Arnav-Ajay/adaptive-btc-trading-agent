@@ -1,27 +1,53 @@
 # adaptive-btc-trading-agent
 
-This repository currently runs two working services:
+This repository currently runs three working services:
 
-- a Coinbase market data ingestor
-- a local-data paper-trading runtime
-
-The ingestor fetches `BTC-USD` `1m` candles from Coinbase on a fixed schedule, deduplicates overlapping windows, writes partitioned parquet files, updates a state file, and emits both console and file logs.
-
-The trading runtime reads recent candles from the local parquet data lake, computes indicators, selects a strategy, and executes paper trades against an in-memory broker.
+- a scheduled Coinbase market-data ingestor
+- a scheduled local-data paper-trading runtime
+- a FastAPI dashboard/API over the stored runtime state
 
 ## What Works
 
-- Coinbase candle ingestion with retries
-- 30-minute scheduled ingestion with APScheduler
-- partitioned parquet storage under `data_lake/`
-- deduplication by candle timestamp
-- ingestion state tracking
-- Dockerized ingestor service with healthcheck
-- ingestion logs to stdout and `logs/ingestion/ingestion.log`
-- local parquet-backed market data reader
-- indicator computation: ATR, RSI, EMA, MACD
+- Coinbase `BTC-USD` candle ingestion
+- 30-minute APScheduler ingestion cadence
+- overlapping-window fetch with parquet deduplication
+- derived interval preprocessing from canonical `1m` candles:
+  - `10m`
+  - `30m`
+  - `1hr`
+  - `1d`
+  - `1week`
+  - `1month`
+- local parquet market-data lake under `data_lake/`
+- backfill script for historical or missed ingestion windows
+- persistent ingestion state and healthchecks
+- paper-trading decisions on a 30-minute schedule
+- local parquet-backed trading data reader
+- indicator computation:
+  - ATR
+  - RSI
+  - EMA
+  - MACD
 - regime detection and strategy routing
-- paper trade execution
+- hybrid strategy stack:
+  - DCA base layer
+  - opportunistic swing entries in bullish regimes
+- persistent paper broker state
+- persistent paper trade ledger
+- persistent cycle log and portfolio snapshot
+- historical backtesting over parquet data
+- backtest metrics:
+  - total return
+  - buy-and-hold return
+  - max drawdown
+  - Sharpe ratio
+  - filled trade count
+  - closed swing trade win rate
+- FastAPI UI/API with:
+  - Bitcoin market page
+  - Trades page
+  - JSON endpoints
+- Dockerized ingestor, trading, and dashboard services with healthchecks
 
 ## Data Layout
 
@@ -29,16 +55,26 @@ The trading runtime reads recent candles from the local parquet data lake, compu
 data_lake/
   symbol=BTC-USD/
     interval=1m/
-      year=2026/
-        month=03/
-          day=24/
-            data.parquet
+    interval=10m/
+    interval=30m/
+    interval=1hr/
+    interval=1d/
+    interval=1week/
+    interval=1month/
   state/
     coinbase_btc_usd_1m.json
+    backfill_btc_usd_1m.json
+    paper_broker_state.json
+    paper_trade_ledger.jsonl
+    paper_cycle_log.jsonl
+    paper_portfolio_snapshot.json
+    paper_decision_trace.jsonl
 
 logs/
   ingestion/
     ingestion.log
+  trading/
+    trading.log
 ```
 
 ## Quick Start
@@ -55,32 +91,71 @@ Run the ingestor:
 python -m app.scheduler.collector_runner
 ```
 
-Run the paper-trading loop:
+Run a one-shot trading cycle:
 
 ```bash
 python -m app.main
 ```
 
-## Docker
-
-Start the scheduled ingestor:
+Run the scheduled trading service:
 
 ```bash
-docker compose up -d market-data-ingestor
+python -m app.scheduler.trading_runner
+```
+
+Run a backfill:
+
+```bash
+python -m app.ingestion.backfill --start 2026-01-01T00:00:00Z
+```
+
+Run a backtest from Python:
+
+```python
+from app.backtest.engine import BacktestEngine
+from app.config.settings import load_config
+
+result = BacktestEngine(load_config()).run(symbol="BTC-USD", interval="1m")
+print(result.metrics)
+```
+
+Run the FastAPI dashboard/API:
+
+```bash
+python -m uvicorn app.api.main:app --host 0.0.0.0 --port 8000
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8000/bitcoin
+http://127.0.0.1:8000/trades
+```
+
+## Docker
+
+Start all services:
+
+```bash
+docker compose up -d --build market-data-ingestor trading-agent dashboard-api
 ```
 
 Watch logs:
 
 ```bash
 docker compose logs -f market-data-ingestor
+docker compose logs -f trading-agent
+docker compose logs -f dashboard-api
 ```
 
-Check container health:
+Check status:
 
 ```bash
-docker inspect --format "{{json .State.Health}}" adaptive-btc-market-data-ingestor
+docker compose ps
 ```
 
-## Flow
+## Current Docs
 
-See [docs/current-flow.md](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/docs/current-flow.md) for the current runtime flow.
+- [docs/current-flow.md](docs/current-flow.md)
+- [docs/metrics.md](docs/metrics.md)
+- [docs/strategies.md](docs/strategies.md)

@@ -1,10 +1,10 @@
 # Current Flow
 
-This document describes only the flow that is currently implemented and verified.
+This document describes only the flows that are currently implemented and verified.
 
 ## 1. Scheduled Ingestion Flow
 
-Entry point: [collector_runner.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/scheduler/collector_runner.py)
+Entry point: [app/scheduler/collector_runner.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/scheduler/collector_runner.py)
 
 ```text
 Load config
@@ -14,69 +14,166 @@ Load config
 -> trigger CoinbaseIngestionService.collect_once()
 ```
 
-Collection flow: [collector.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/ingestion/collector.py)
+Collection flow: [app/ingestion/collector.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/ingestion/collector.py)
 
 ```text
-Fetch 90-minute overlapping window of BTC-USD 1m candles from Coinbase
+Fetch overlapping BTC-USD 1m candles from Coinbase
 -> retry on failure
--> validate rows
--> merge with existing parquet partition
+-> normalize into Candle objects
+-> merge with existing parquet partitions
 -> deduplicate by timestamp
--> rewrite affected partition
+-> rewrite affected partitions
+-> build derived intervals from canonical 1m data
 -> update ingestion state file
 -> write logs
 ```
 
-Storage flow: [parquet_store.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/ingestion/parquet_store.py)
+Storage and preprocessing:
 
-```text
-Normalized candles
--> DataFrame
--> partition by year/month/day
--> read existing partition if present
--> concat + dedupe + sort
--> atomic parquet write
-```
+- parquet storage: [app/ingestion/parquet_store.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/ingestion/parquet_store.py)
+- derived interval builder: [app/ingestion/preprocessor.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/ingestion/preprocessor.py)
+
+Derived intervals currently written:
+
+- `10m`
+- `30m`
+- `1hr`
+- `1d`
+- `1week`
+- `1month`
 
 State and health:
 
-- state file: [data_lake/state/coinbase_btc_usd_1m.json](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/coinbase_btc_usd_1m.json)
-- healthcheck entry point: [healthcheck.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/scheduler/healthcheck.py)
-- ingestion log file: [logs/ingestion/ingestion.log](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/logs/ingestion/ingestion.log)
+- ingestion state: [data_lake/state/coinbase_btc_usd_1m.json](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/coinbase_btc_usd_1m.json)
+- ingestion healthcheck: [app/scheduler/healthcheck.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/scheduler/healthcheck.py)
+- ingestion log: [logs/ingestion/ingestion.log](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/logs/ingestion/ingestion.log)
 
-## 2. Paper-Trading Flow
+## 2. Backfill Flow
 
-Entry point: [app/main.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/main.py)
+Entry point: [app/ingestion/backfill.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/ingestion/backfill.py)
+
+```text
+Read start/end arguments
+-> fetch historical windows from Coinbase within API limits
+-> write canonical 1m parquet data
+-> build the same derived intervals
+-> update backfill state
+```
+
+Backfill state:
+
+- [data_lake/state/backfill_btc_usd_1m.json](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/backfill_btc_usd_1m.json)
+
+## 3. Scheduled Paper-Trading Flow
+
+Scheduler entry point: [app/scheduler/trading_runner.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/scheduler/trading_runner.py)
+
+One-shot entry point: [app/main.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/main.py)
 
 ```text
 Load config
 -> read recent candles from local parquet data lake
+-> validate candle freshness and minimum history
 -> compute ATR / RSI / EMA / MACD
+-> update mark price and evaluate open swing stop-losses
 -> detect market regime
--> select strategy
+-> choose strategy stack
 -> generate signals
--> review signals against portfolio constraints
--> execute paper orders
--> log cycle summary
+-> review and size signals
+-> execute paper trades
+-> persist broker state, trade ledger, cycle log, and portfolio snapshot
 ```
 
-Local data reader:
+Trading data reader:
 
-- [parquet_market_data.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/data/parquet_market_data.py)
-- [data_normalizer.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/data/data_normalizer.py)
+- [app/data/parquet_market_data.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/data/parquet_market_data.py)
+- [app/data/data_normalizer.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/data/data_normalizer.py)
 
-Strategy and execution path:
+Feature and strategy path:
 
-- indicators: [indicators.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/features/indicators.py)
-- router: [router.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/strategies/router.py)
-- DCA strategy: [dca.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/strategies/dca.py)
-- paper broker: [paper_broker.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/execution/paper_broker.py)
+- indicators: [app/features/indicators.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/features/indicators.py)
+- regime detection: [app/features/regime_features.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/features/regime_features.py)
+- strategy router: [app/strategies/router.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/strategies/router.py)
+- hybrid strategy: [app/strategies/hybrid.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/strategies/hybrid.py)
+- DCA strategy: [app/strategies/dca.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/strategies/dca.py)
+- swing strategy: [app/strategies/swing_atr.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/strategies/swing_atr.py)
+- order review/execution: [app/execution/order_manager.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/execution/order_manager.py)
+- paper broker: [app/execution/paper_broker.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/execution/paper_broker.py)
 
-## 3. Runtime Boundaries
+Persistent trading artifacts:
+
+- broker state: [data_lake/state/paper_broker_state.json](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/paper_broker_state.json)
+- trade ledger: [data_lake/state/paper_trade_ledger.jsonl](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/paper_trade_ledger.jsonl)
+- cycle log: [data_lake/state/paper_cycle_log.jsonl](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/paper_cycle_log.jsonl)
+- portfolio snapshot: [data_lake/state/paper_portfolio_snapshot.json](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/paper_portfolio_snapshot.json)
+- decision trace: [data_lake/state/paper_decision_trace.jsonl](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/paper_decision_trace.jsonl)
+- trading log: [logs/trading/trading.log](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/logs/trading/trading.log)
+
+Trading health:
+
+- [app/scheduler/trading_healthcheck.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/scheduler/trading_healthcheck.py)
+
+## 4. Dashboard/API Flow
+
+API entry point: [app/api/main.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/api/main.py)
+
+State loader:
+
+- [app/api/state_reader.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/api/state_reader.py)
+
+```text
+Read ingestion state
+-> read trading state and ledger files
+-> load chart candles from local parquet
+-> render Bitcoin page
+-> render Trades page
+-> expose JSON health/state endpoints
+```
+
+Current dashboard pages:
+
+- `/bitcoin`
+- `/trades`
+
+Current JSON endpoints:
+
+- `/health`
+- `/api/state`
+- `/api/ingestion`
+- `/api/trading`
+- `/api/candles`
+- `/api/trades`
+
+## 5. Backtest Flow
+
+Entry point: [app/backtest/engine.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/backtest/engine.py)
+
+```text
+Load historical candles from parquet
+-> replay candles sequentially from minimum-history threshold onward
+-> compute the same indicators used by the live trading runtime
+-> evaluate open swing stop-losses
+-> run the same regime and strategy path
+-> execute on an isolated paper broker state
+-> record equity curve and trades
+-> compute replay metrics
+```
+
+Backtest metrics:
+
+- total return
+- buy-and-hold return
+- max drawdown
+- Sharpe ratio
+- filled trade count
+- closed swing trade win rate
+
+## 6. Runtime Boundaries
 
 The current separation is:
 
-- the ingestor is the only runtime that talks to Coinbase for candles
-- the trading loop reads only from the local parquet lake
-- ingestion persistence survives Docker rebuilds because `data_lake/` is bind-mounted
-- ingestion logs survive Docker restarts because `logs/` is bind-mounted
+- the ingestor is the only runtime that talks to Coinbase for market data
+- the trading runtime reads only from the local parquet lake
+- preprocessing derives larger intervals from canonical `1m` candles
+- the dashboard reads only persisted files and parquet data
+- `data_lake/`, `config/`, and `logs/` are shared between containers
