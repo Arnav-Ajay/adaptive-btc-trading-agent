@@ -88,9 +88,7 @@ def run_backfill(
     step = timedelta(seconds=interval_seconds)
     cursor = start_at.astimezone(UTC)
     hard_end = end_at.astimezone(UTC)
-    backfill_state_path = state_path or str(
-        Path(config.data.data_lake_path) / "state" / f"backfill_{symbol.replace('-', '_').lower()}_{interval}.json"
-    )
+    backfill_state_path = state_path or config.ingestion.state_path
     state_store = StateStore(backfill_state_path)
 
     api_calls = 0

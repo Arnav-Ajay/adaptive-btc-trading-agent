@@ -133,6 +133,17 @@ def _find_recent_gap_start(config) -> datetime | None:
     return None
 
 
+def _has_bootstrap_data(config) -> bool:
+    """Return whether any canonical candles already exist in the lake."""
+    store = ParquetMarketDataStore(config.data.data_lake_path)
+    candles = store.load_candles(
+        symbol=config.trading.symbol,
+        interval=config.ingestion.interval,
+        limit=1,
+    )
+    return bool(candles)
+
+
 def _maybe_catch_up_from_recent_gaps(
     scheduler: BlockingScheduler,
     config,
@@ -147,6 +158,25 @@ def _maybe_catch_up_from_recent_gaps(
     logger.warning(
         "Scheduling startup catch-up ingestion because recent parquet history has an internal gap starting at %s",
         gap_start.isoformat(),
+    )
+    _schedule_catch_up(scheduler=scheduler, service=service, run_lock=run_lock)
+
+
+def _maybe_bootstrap_initial_ingestion(
+    scheduler: BlockingScheduler,
+    config,
+    service: CoinbaseIngestionService,
+    run_lock: threading.Lock,
+) -> None:
+    """Queue an immediate collection when the repo is brand new and has no state or data."""
+    logger = logging.getLogger(__name__)
+    state = StateStore(config.ingestion.state_path).load()
+    if state.last_successful_run_at:
+        return
+    if _has_bootstrap_data(config):
+        return
+    logger.warning(
+        "Scheduling initial bootstrap ingestion because no ingestion state or canonical market data exists yet"
     )
     _schedule_catch_up(scheduler=scheduler, service=service, run_lock=run_lock)
 
@@ -197,6 +227,12 @@ def run() -> None:
         run_lock=run_lock,
     )
     _maybe_catch_up_from_recent_gaps(
+        scheduler=scheduler,
+        config=config,
+        service=service,
+        run_lock=run_lock,
+    )
+    _maybe_bootstrap_initial_ingestion(
         scheduler=scheduler,
         config=config,
         service=service,
