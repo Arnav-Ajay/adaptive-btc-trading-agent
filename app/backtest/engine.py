@@ -230,26 +230,15 @@ class BacktestEngine:
     @staticmethod
     def _closed_trade_stats(trades: list[dict[str, object]]) -> tuple[int, float]:
         """Compute closed-trade count and win rate from matched swing exits."""
-        swing_buys: dict[str, dict[str, object]] = {}
         wins = 0
         closed = 0
         for trade in trades:
             strategy_name = str(trade.get("strategy_name", ""))
             side = str(trade.get("side", ""))
-            if strategy_name == "SwingATRStrategy" and side == TradeSide.BUY.value:
-                swing_buys[str(trade.get("order_id", ""))] = trade
-                continue
             if strategy_name != "SwingATRStrategy" or side != TradeSide.SELL.value:
                 continue
-            reason = str(trade.get("reason", ""))
-            if not reason.startswith("stop_loss_hit:"):
-                continue
-            position_id = reason.removeprefix("stop_loss_hit:")
-            buy_trade = swing_buys.get(position_id)
-            if not buy_trade:
-                continue
             closed += 1
-            if float(trade.get("price", 0.0)) > float(buy_trade.get("price", 0.0)):
+            if float(trade.get("realized_pnl_usd", 0.0) or 0.0) > 0:
                 wins += 1
         win_rate = 0.0 if closed == 0 else (wins / closed) * 100
         return closed, win_rate

@@ -81,7 +81,7 @@ def _base_html(title: str, active: str, body: str, script: str = "") -> str:
           .mode {{ display:grid; gap:.4rem; border-radius:18px; padding:1rem; border:1px solid #d9e1ea; }} .mode.live {{ background:#fffaf0; border-color:#f5d38c; }}
           .ghost {{ border-radius:999px; border:1px solid #cbd5e1; background:#eef2f7; color:#667085; font-weight:700; padding:.65rem .95rem; width:fit-content; cursor:pointer; }}
           .ghost:disabled {{ cursor:not-allowed; opacity:.72; }}
-          table {{ width:100%; border-collapse:collapse; margin-top:.9rem; }} th,td {{ text-align:left; padding:.75rem .65rem; border-bottom:1px solid #e5e7eb; font-size:.92rem; }} th {{ color:#667085; font-weight:700; }} .empty {{ color:#667085; }}
+          table {{ width:100%; border-collapse:collapse; margin-top:.9rem; }} th,td {{ text-align:left; padding:.75rem .65rem; border-bottom:1px solid #e5e7eb; font-size:.92rem; }} th {{ color:#667085; font-weight:700; }} .empty {{ color:#667085; }} .decision-row {{ cursor:pointer; }} .decision-row:hover {{ background:#f8fafc; }} .decision-row-active {{ background:#eef4ff; }} .decision-row-hidden {{ display:none; }}
           .footer {{ margin-top:1.25rem; display:flex; justify-content:space-between; align-items:center; gap:1rem; padding:1rem 1.1rem; border-radius:18px; background:rgba(255,255,255,.72); border:1px solid #d9e1ea; color:#475467; font-size:.9rem; }}
           .footer-meta {{ display:flex; gap:.65rem; align-items:center; flex-wrap:wrap; }}
           .footer-sep {{ color:#98a2b3; }}
@@ -112,6 +112,7 @@ def _base_html(title: str, active: str, body: str, script: str = "") -> str:
           .toolbar-label {{ color:#667085; font-size:.76rem; font-weight:700; text-transform:uppercase; letter-spacing:.05em; }}
           .segmented {{ display:flex; gap:.45rem; flex-wrap:wrap; }}
           .seg-btn {{ border-radius:999px; border:1px solid #d0d8e2; background:#eef2f7; color:#475467; font-weight:700; padding:.6rem .95rem; cursor:pointer; }}
+          .seg-btn.active {{ background:#fff; color:#132033; border-color:#b9c6d8; box-shadow:0 6px 14px rgba(16,24,40,.08); }}
           .filter-grid {{ display:none; grid-template-columns:1fr 1fr auto; gap:.7rem; align-items:end; margin-bottom:.7rem; }}
           .filter-actions {{ display:flex; gap:.45rem; flex-wrap:wrap; }}
           .status-line {{ color:#667085; font-size:.92rem; margin-bottom:.7rem; }}
@@ -177,14 +178,16 @@ def _portfolio_metrics(snapshot: dict[str, object], initial_cash: float) -> dict
     equity = float(snapshot.get("equity_usd", 0.0))
     avg_entry = float(snapshot.get("avg_entry_price", 0.0))
     last_mark = float(snapshot.get("last_mark_price", 0.0))
-    total_pnl = equity - initial_cash
+    realized = float(snapshot.get("realized_pnl_usd", 0.0))
+    total_fees = float(snapshot.get("total_fees_usd", 0.0))
     unrealized = ((last_mark - avg_entry) * btc_units) if btc_units > 0 and avg_entry > 0 else 0.0
-    realized = total_pnl - unrealized
+    total_pnl = realized + unrealized
     exposure = 0.0 if equity <= 0 else ((btc_units * last_mark) / equity) * 100
     return {
         "cash": cash, "btc_units": btc_units, "equity": equity, "avg_entry": avg_entry, "last_mark": last_mark,
         "total_pnl": total_pnl, "unrealized_pnl": unrealized, "realized_pnl": realized, "exposure_percent": exposure,
         "dca_btc_units": float(snapshot.get("dca_btc_units", 0.0)), "swing_btc_units": float(snapshot.get("swing_btc_units", 0.0)),
+        "total_fees_usd": total_fees,
     }
 
 
@@ -212,21 +215,178 @@ def _volatility_label(atr: float, price: float) -> str:
 def _decision_breakdown(latest_cycle: dict[str, object] | None, latest_trace: dict[str, object] | None) -> dict[str, object]:
     """Turn the raw trace into a more readable decision narrative."""
     if not latest_cycle:
-        return {"headline": "No decision recorded", "decision": "No data", "reason_lines": ["The trading loop has not recorded a cycle yet."], "interpretation": "Run the trading loop to produce the first decision record."}
+        return {
+            "headline": "No decision recorded",
+            "decision": "No data",
+            "reason_lines": ["The trading loop has not recorded a cycle yet."],
+            "interpretation": "Run the trading loop to produce the first decision record.",
+            "timestamp": "",
+        }
     trace = list(latest_trace.get("decision_trace", [])) if latest_trace else []
     executions = latest_cycle.get("execution_results", [])
+    accepted_executions = [item for item in executions if item.get("accepted")]
     signal_count = int(latest_cycle.get("signal_count", 0))
-    decision = "BUY" if any(item.get("accepted") for item in executions) else ("WATCH" if signal_count > 0 else "NO BUY")
-    if any("price_above_drop_threshold" in item for item in trace):
+    decision = "BUY" if accepted_executions else ("WATCH" if signal_count > 0 else "NO BUY")
+    recorded_at = str(latest_cycle.get("recorded_at", ""))
+    indicator_snapshot = latest_cycle.get("indicator_snapshot", {}) if latest_cycle else {}
+
+    def _trace_value(prefix: str) -> str:
+        for item in trace:
+            if item.startswith(prefix):
+                return item[len(prefix) :]
+        return ""
+
+    def _dca_skip_lines() -> list[str]:
+        latest_buy_fill = next(
+            (item for item in trace if "latest_buy_fill_price=" in item),
+            "",
+        )
         threshold = next((item for item in trace if item.startswith("threshold:")), "").replace("threshold:required_price_at_or_below=", "Required <= $")
         observed = next((item for item in trace if item.startswith("observed:")), "").replace("observed:last_price=", "Current price = $")
-        return {"headline": f"Decision: {decision}", "decision": decision, "reason_lines": ["Price is above the configured DCA threshold.", threshold, observed], "interpretation": "Market is not favorable for accumulation yet, so the DCA layer is waiting for a deeper dip."}
+        threshold_value = next((item for item in trace if item.startswith("threshold:")), "").replace("threshold:required_price_at_or_below=", "")
+        latest_buy_value = latest_buy_fill.split("latest_buy_fill_price=", 1)[1] if latest_buy_fill else ""
+        reason_lines = ["Price is above the configured DCA threshold."]
+        try:
+            threshold_float = float(threshold_value)
+            latest_buy_float = float(latest_buy_value)
+            drop_percent = (1 - (threshold_float / latest_buy_float)) * 100
+            reason_lines.append(
+                f"Threshold is based on the last buy at ${latest_buy_float:.2f} with a {drop_percent:.2f}% drop trigger."
+            )
+        except (ValueError, ZeroDivisionError):
+            pass
+        reason_lines.extend([threshold, observed])
+        return [line for line in reason_lines if line]
+
+    def _swing_check_lines() -> list[str]:
+        return [
+            item.replace("check:", "").replace(" actual=", " = ").replace(" fast=", " | fast=").replace(" slow=", " slow=")
+            for item in trace
+            if item.startswith("check:")
+        ]
+
+    if accepted_executions:
+        latest_execution = accepted_executions[-1]
+        strategy_name = str(latest_execution.get("strategy_name") or latest_cycle.get("strategy_name", "")).replace("Strategy", "")
+        reason = str(latest_execution.get("reason", ""))
+        if reason in {"", "filled"}:
+            if any("signal:initial_dca_entry" in item for item in trace):
+                reason = "initial_dca_entry"
+            elif any("signal:price_drop_dca_entry" in item for item in trace):
+                reason = "price_drop_dca_entry"
+            elif any("signal:momentum_atr_setup" in item for item in trace):
+                reason = "momentum_atr_setup"
+        price = float(latest_execution.get("price") or indicator_snapshot.get("last_price", 0.0))
+        size_usd = float(latest_execution.get("size_usd", 0.0))
+        if size_usd == 0.0:
+            if reason == "momentum_atr_setup":
+                signal_value = _trace_value("signal:momentum_atr_setup size_usd=")
+                size_usd = float(signal_value or 0.0)
+            elif reason in {"initial_dca_entry", "price_drop_dca_entry", "dca_drop_buy"}:
+                prefix = "signal:initial_dca_entry size_usd=" if reason == "initial_dca_entry" else "signal:price_drop_dca_entry size_usd="
+                signal_value = _trace_value(prefix)
+                size_usd = float(signal_value or 0.0)
+        stop_loss = latest_execution.get("stop_loss")
+        if stop_loss is None and reason == "momentum_atr_setup":
+            stop_loss_value = _trace_value("decision:momentum_conditions_met stop_loss=")
+            stop_loss = float(stop_loss_value) if stop_loss_value else None
+        if reason == "momentum_atr_setup":
+            metric_checks = [
+                item.replace("check:", "").replace(" actual=", " = ").replace(" fast=", " | fast=").replace(" slow=", " slow=")
+                for item in trace
+                if item.startswith("check:")
+            ]
+            reason_lines = [
+                "Swing momentum conditions were met under the hybrid strategy.",
+                *metric_checks,
+                f"Entry executed at ${price:.2f} for ${size_usd:.2f}.",
+            ]
+            if stop_loss is not None:
+                reason_lines.append(f"ATR stop-loss set at ${float(stop_loss):.2f}.")
+            return {
+                "headline": f"Decision: {decision}",
+                "decision": decision,
+                "reason_lines": reason_lines,
+                "interpretation": "The swing layer inside the hybrid strategy found a valid momentum setup and opened a tracked swing position.",
+                "timestamp": recorded_at,
+            }
+        if reason in {"initial_dca_entry", "price_drop_dca_entry", "dca_drop_buy"}:
+            if reason == "initial_dca_entry":
+                return {
+                    "headline": f"Decision: {decision}",
+                    "decision": decision,
+                    "reason_lines": [
+                        "No prior DCA buy fill existed in the ledger.",
+                        f"DCA order size was ${size_usd:.2f}.",
+                        f"Entry executed at ${price:.2f} for ${size_usd:.2f}.",
+                    ],
+                    "interpretation": "This is the first accumulation buy for the paper portfolio.",
+                    "timestamp": recorded_at,
+                }
+            threshold_lines = _dca_skip_lines()
+            return {
+                "headline": f"Decision: {decision}",
+                "decision": decision,
+                "reason_lines": [
+                    "Current price crossed below the configured DCA threshold.",
+                    *threshold_lines[1:3],
+                    f"Entry executed at ${price:.2f} for ${size_usd:.2f}.",
+                ],
+                "interpretation": "The DCA layer added to the long-term BTC position after the drop threshold was reached.",
+                "timestamp": recorded_at,
+            }
+    if "component:DCAStrategy" in trace and "component:SwingATRStrategy" in trace and not accepted_executions:
+        reason_lines = [
+            "DCA component:",
+            *_dca_skip_lines(),
+            "Swing component:",
+            *_swing_check_lines(),
+        ]
+        if any("momentum_conditions_not_met" in item for item in trace):
+            reason_lines.append("Swing setup did not meet all momentum entry conditions.")
+        return {
+            "headline": f"Decision: {decision}",
+            "decision": decision,
+            "reason_lines": reason_lines,
+            "interpretation": "The hybrid strategy evaluated both DCA and swing components, but neither produced an executable trade.",
+            "timestamp": recorded_at,
+        }
+    if any("price_above_drop_threshold" in item for item in trace):
+        return {
+            "headline": f"Decision: {decision}",
+            "decision": decision,
+            "reason_lines": _dca_skip_lines(),
+            "interpretation": "Market is not favorable for accumulation yet, so the DCA layer is waiting for a deeper dip.",
+            "timestamp": recorded_at,
+        }
     if any("momentum_conditions_not_met" in item for item in trace):
         checks = [item.replace("check:", "").replace(" actual=", " = ").replace(" fast=", " | fast=").replace(" slow=", " slow=") for item in trace if item.startswith("check:")]
-        return {"headline": f"Decision: {decision}", "decision": decision, "reason_lines": checks, "interpretation": "Trend exists, but the swing entry filters are not aligned strongly enough to justify a trade."}
+        return {
+            "headline": f"Decision: {decision}",
+            "decision": decision,
+            "reason_lines": checks,
+            "interpretation": "Trend exists, but the swing entry filters are not aligned strongly enough to justify a trade.",
+            "timestamp": recorded_at,
+        }
     if any("initial_dca_entry" in item for item in trace):
-        return {"headline": f"Decision: {decision}", "decision": decision, "reason_lines": ["No prior DCA buy fill existed in the ledger.", "The DCA base layer opened the initial BTC position."], "interpretation": "This is the first accumulation buy for the paper portfolio."}
-    return {"headline": f"Decision: {decision}", "decision": decision, "reason_lines": trace or ["No detailed decision trace recorded."], "interpretation": "The system evaluated the current market state and kept the portfolio unchanged."}
+        return {
+            "headline": f"Decision: {decision}",
+            "decision": decision,
+            "reason_lines": [
+                "No prior DCA buy fill existed in the ledger.",
+                f"DCA order size was ${float(_trace_value('signal:initial_dca_entry size_usd=') or 0.0):.2f}.",
+                "The DCA base layer opened the initial BTC position.",
+            ],
+            "interpretation": "This is the first accumulation buy for the paper portfolio.",
+            "timestamp": recorded_at,
+        }
+    return {
+        "headline": f"Decision: {decision}",
+        "decision": decision,
+        "reason_lines": trace or ["No detailed decision trace recorded."],
+        "interpretation": "The system evaluated the current market state and kept the portfolio unchanged.",
+        "timestamp": recorded_at,
+    }
 
 
 def _confidence_snapshot(indicators: dict[str, object], regime: str) -> tuple[float, str]:
@@ -250,10 +410,22 @@ def _confidence_snapshot(indicators: dict[str, object], regime: str) -> tuple[fl
     return score, "High" if score >= 0.72 else "Medium" if score >= 0.55 else "Low"
 
 
-def _format_trade_row(trade: dict[str, object]) -> str:
+def _format_trade_row(trade: dict[str, object], first_dca_buy_timestamp: str | None = None) -> str:
     """Render one trade table row."""
     strategy = str(trade.get("strategy_name", "") or "DCAStrategy")
-    signal_type = "Dip Buy" if strategy == "DCAStrategy" else "Momentum"
+    reason = str(trade.get("reason", "") or "")
+    is_first_dca_buy = (
+        strategy == "DCAStrategy"
+        and str(trade.get("side", "")).lower() == "buy"
+        and first_dca_buy_timestamp is not None
+        and str(trade.get("timestamp", "")) == first_dca_buy_timestamp
+    )
+    if reason == "initial_dca_entry" or is_first_dca_buy:
+        signal_type = "Initial Buy"
+    elif strategy == "DCAStrategy":
+        signal_type = "Dip Buy"
+    else:
+        signal_type = "Momentum"
     side = escape(str(trade.get("side", "")).upper())
     strategy_label = escape(strategy.replace("Strategy", ""))
     return (
@@ -266,6 +438,38 @@ def _format_trade_row(trade: dict[str, object]) -> str:
         f"<td>{float(trade.get('btc_units', 0)):.6f} BTC</td>"
         f"<td>{strategy_label}</td>"
         f"<td>{escape(signal_type)}</td>"
+        "</tr>"
+    )
+
+
+def _format_decision_row(cycle: dict[str, object], breakdown: dict[str, object], hidden: bool = False) -> str:
+    """Render one decision-log table row."""
+    execution_results = cycle.get("execution_results", [])
+    execution_count = sum(1 for result in execution_results if result.get("accepted"))
+    strategy_name = str(cycle.get("strategy_name", "")).replace("Strategy", "")
+    row_classes = ["decision-row"]
+    if hidden:
+        row_classes.append("decision-row-hidden")
+    payload = escape(
+        json.dumps(
+            {
+                "headline": str(breakdown["headline"]),
+                "decision": str(breakdown["decision"]),
+                "reason_lines": [str(line) for line in breakdown["reason_lines"]],
+                "interpretation": str(breakdown["interpretation"]),
+                "timestamp": _format_display_timestamp(str(breakdown.get("timestamp", ""))),
+            }
+        )
+    )
+    return (
+        f"<tr class=\"{' '.join(row_classes)}\" data-breakdown=\"{payload}\">"
+        f"<td>{escape(_format_display_timestamp(str(cycle.get('recorded_at', ''))))}</td>"
+        f"<td>{escape(str(cycle.get('regime', '')).upper())}</td>"
+        f"<td>{escape(strategy_name)}</td>"
+        f"<td class=\"decision-cell\">{escape(str(breakdown['decision']))}</td>"
+        f"<td>{int(cycle.get('signal_count', 0))}</td>"
+        f"<td>{execution_count}</td>"
+        f"<td>{escape(str(breakdown['interpretation']))}</td>"
         "</tr>"
     )
 
@@ -322,8 +526,11 @@ def api_state() -> dict[str, object]:
 @app.get("/api/ingestion")
 def api_ingestion() -> dict[str, object] | dict[str, str]:
     """Return the latest ingestion heartbeat."""
-    state = load_dashboard_state(load_config())["ingestion_state"]
-    return state or {"status": "missing"}
+    state = load_dashboard_state(load_config())
+    payload = state["ingestion_state"] or {"status": "missing"}
+    if state["ingestion_gap_audit"] is not None:
+        payload = {**payload, "gap_audit": state["ingestion_gap_audit"]}
+    return payload
 
 
 @app.get("/api/trading")
@@ -423,8 +630,8 @@ def bitcoin_page() -> str:
     body = f"""
     <section class="status-strip">
       <div class="status-chip"><div class="label">System Status</div><div class="status-value">ACTIVE (Paper Trading)</div></div>
-      <div class="status-chip"><div class="label">Current Regime</div><div class="status-value">{escape(str(latest_cycle.get('regime', 'n/a')).upper())}</div></div>
-      <div class="status-chip"><div class="label">Confidence</div><div class="status-value">{confidence_score:.2f} ({escape(confidence_label)})</div></div>
+      <div class="status-chip"><div class="label">Trade Regime</div><div class="status-value">{escape(str(latest_cycle.get('regime', 'n/a')).upper())}</div></div>
+      <div class="status-chip"><div class="label">Trade Confidence</div><div class="status-value">{confidence_score:.2f} ({escape(confidence_label)})</div></div>
       <div class="status-chip"><div class="label">Freshness</div><div class="status-value"><span class="pill {freshness_class}">{escape(freshness_label)}</span></div></div>
       <div class="status-chip"><div class="label">Latest Candle</div><div class="status-value">{escape(latest_ingested_label)}</div></div>
     </section>
@@ -434,24 +641,24 @@ def bitcoin_page() -> str:
           <div class="market-top">
             <div>
               <div class="market-title">Market Context</div>
-              <div class="market-sub">Deeper history from the local parquet lake, rendered for readability instead of raw debug output.</div>
+              <div class="market-sub">Metrics on this card update with the active chart selection. The signal panel uses the latest trading cycle separately.</div>
             </div>
           </div>
           <div class="market-price-row">
             <div>
-              <div class="market-price">${btc_summary["price"]:,.2f}</div>
-              <div class="market-change" style="color:{'#9cf7b7' if float(btc_summary['change_percent']) >= 0 else '#fecaca'};">{btc_summary['change_percent']:+.2f}% vs loaded window</div>
+              <div class="market-price" id="market-price">${btc_summary["price"]:,.2f}</div>
+              <div class="market-change" id="market-change" style="color:{'#9cf7b7' if float(btc_summary['change_percent']) >= 0 else '#fecaca'};">{btc_summary['change_percent']:+.2f}% vs loaded window</div>
             </div>
             <div class="hero-row">
-              <span class="pill neutral">Trend {escape(str(latest_cycle.get('regime', 'n/a')).upper())}</span>
-              <span class="pill neutral">Volatility {escape(volatility)}</span>
+              <span class="pill neutral" id="market-trend-pill">Market Trend {escape(trend_label.upper())}</span>
+              <span class="pill neutral" id="market-volatility-pill">Market Volatility {escape(volatility)}</span>
             </div>
           </div>
           <div class="market-stats">
-            <div class="market-stat"><div class="metric-label">Range High</div><div class="metric-value">${btc_summary["window_high"]:,.2f}</div></div>
-            <div class="market-stat"><div class="metric-label">Range Low</div><div class="metric-value">${btc_summary["window_low"]:,.2f}</div></div>
-            <div class="market-stat"><div class="metric-label">Avg Volume</div><div class="metric-value">{avg_volume:,.2f} BTC</div></div>
-            <div class="market-stat"><div class="metric-label">EMA Spread</div><div class="metric-value">{spread:+.0f} ({escape(trend_label)})</div></div>
+            <div class="market-stat"><div class="metric-label">Range High</div><div class="metric-value" id="market-range-high">${btc_summary["window_high"]:,.2f}</div></div>
+            <div class="market-stat"><div class="metric-label">Range Low</div><div class="metric-value" id="market-range-low">${btc_summary["window_low"]:,.2f}</div></div>
+            <div class="market-stat"><div class="metric-label">Avg Volume</div><div class="metric-value" id="market-avg-volume">{avg_volume:,.2f} BTC</div></div>
+            <div class="market-stat"><div class="metric-label">EMA Spread</div><div class="metric-value" id="market-ema-spread">{spread:+.0f} ({escape(trend_label)})</div></div>
           </div>
         </section>
         <section class="panel chart-card">
@@ -493,8 +700,9 @@ def bitcoin_page() -> str:
       </div>
       <aside class="btc-side">
         <section class="side-card">
-          <div class="label">Indicators</div>
+          <div class="label">Trade Indicators</div>
           <div class="side-title">Current Signal Context</div>
+          <div class="chart-note">Latest scheduled trading-cycle snapshot, based on the most recent 500 x 1m candles.</div>
           <div class="indicator-group">
             <div class="indicator-group-title">Momentum</div>
             <div class="indicator-grid">
@@ -545,6 +753,14 @@ def bitcoin_page() -> str:
       const applyFilters = document.getElementById("applyFilters");
       const resetFilters = document.getElementById("resetFilters");
       const filterStatus = document.getElementById("filterStatus");
+      const marketPriceEl = document.getElementById("market-price");
+      const marketChangeEl = document.getElementById("market-change");
+      const marketTrendPillEl = document.getElementById("market-trend-pill");
+      const marketVolatilityPillEl = document.getElementById("market-volatility-pill");
+      const marketRangeHighEl = document.getElementById("market-range-high");
+      const marketRangeLowEl = document.getElementById("market-range-low");
+      const marketAvgVolumeEl = document.getElementById("market-avg-volume");
+      const marketEmaSpreadEl = document.getElementById("market-ema-spread");
       const rangeButtons = [...document.querySelectorAll("[data-range]")];
       const typeButtons = [...document.querySelectorAll("[data-chart-type]")];
       let activeRange = "1440";
@@ -569,6 +785,13 @@ def bitcoin_page() -> str:
         if (range === "480") return 48;     // 8H from 10m
         if (range === "1440") return 48;    // 1D from 30m
         return null;                        // ALL
+      }}
+
+      function xAxisTickFormatForRange(range) {{
+        if (range === "60") return "%-I:%M %p";
+        if (range === "240" || range === "480") return "%b %-d\\n%-I:%M %p";
+        if (range === "1440") return "%b %-d\\n%-I:%M %p";
+        return "%b %-d\\n%Y";
       }}
 
       function updateIntervalUi() {{
@@ -642,6 +865,98 @@ def bitcoin_page() -> str:
           currency: "USD",
           maximumFractionDigits: 2,
         }}).format(Number(value));
+      }}
+
+      function calculateEma(values, period) {{
+        if (!values.length) return 0;
+        const multiplier = 2 / (period + 1);
+        let ema = values[0];
+        for (let index = 1; index < values.length; index += 1) {{
+          ema = (values[index] - ema) * multiplier + ema;
+        }}
+        return ema;
+      }}
+
+      function calculateAtr(data, period = 14) {{
+        if (data.length < 2) return 0;
+        const trueRanges = [];
+        for (let index = 1; index < data.length; index += 1) {{
+          const current = data[index];
+          const previous = data[index - 1];
+          const high = Number(current.high ?? current.close);
+          const low = Number(current.low ?? current.close);
+          const previousClose = Number(previous.close);
+          const trueRange = Math.max(
+            high - low,
+            Math.abs(high - previousClose),
+            Math.abs(low - previousClose),
+          );
+          trueRanges.push(trueRange);
+        }}
+        const window = trueRanges.slice(-period);
+        if (!window.length) return 0;
+        return window.reduce((sum, value) => sum + value, 0) / window.length;
+      }}
+
+      function trendStrengthFromSpread(spread) {{
+        if (spread > 20) return "Bullish";
+        if (spread > 0) return "Weak bullish";
+        if (spread < -20) return "Bearish";
+        if (spread < 0) return "Weak bearish";
+        return "Flat";
+      }}
+
+      function volatilityLabel(atr, price) {{
+        if (price <= 0) return "Unknown";
+        const ratio = (atr / price) * 100;
+        if (ratio >= 0.35) return "High";
+        if (ratio >= 0.15) return "Medium";
+        return "Low";
+      }}
+
+      function updateMarketContext(data) {{
+        if (!data.length) return;
+        const closes = data.map(point => Number(point.close));
+        const highs = data.map(point => Number(point.high ?? point.close));
+        const lows = data.map(point => Number(point.low ?? point.close));
+        const volumes = data.map(point => Number(point.volume ?? 0));
+        const firstClose = closes[0];
+        const lastClose = closes[closes.length - 1];
+        const changePercent = firstClose === 0 ? 0 : ((lastClose - firstClose) / firstClose) * 100;
+        const avgVolume = volumes.length ? volumes.reduce((sum, value) => sum + value, 0) / volumes.length : 0;
+        const emaFast = calculateEma(closes, 12);
+        const emaSlow = calculateEma(closes, 26);
+        const spread = emaFast - emaSlow;
+        const trendLabel = trendStrengthFromSpread(spread);
+        const atr = calculateAtr(data, 14);
+        const volatility = volatilityLabel(atr, lastClose);
+
+        if (marketPriceEl) {{
+          marketPriceEl.textContent = formatCurrency(lastClose);
+        }}
+        if (marketChangeEl) {{
+          marketChangeEl.textContent = `${{changePercent >= 0 ? "+" : ""}}${{changePercent.toFixed(2)}}% vs visible range`;
+          marketChangeEl.style.color = changePercent >= 0 ? "#9cf7b7" : "#fecaca";
+        }}
+        if (marketTrendPillEl) {{
+          marketTrendPillEl.textContent = `Market Trend ${{trendLabel.toUpperCase()}}`;
+        }}
+        if (marketVolatilityPillEl) {{
+          marketVolatilityPillEl.textContent = `Market Volatility ${{volatility}}`;
+        }}
+        if (marketRangeHighEl) {{
+          marketRangeHighEl.textContent = formatCurrency(Math.max(...highs));
+        }}
+        if (marketRangeLowEl) {{
+          marketRangeLowEl.textContent = formatCurrency(Math.min(...lows));
+        }}
+        if (marketAvgVolumeEl) {{
+          marketAvgVolumeEl.textContent = `${{avgVolume.toFixed(2)}} BTC`;
+        }}
+        if (marketEmaSpreadEl) {{
+          const roundedSpread = spread >= 0 ? `+${{spread.toFixed(0)}}` : spread.toFixed(0);
+          marketEmaSpreadEl.textContent = `${{roundedSpread}} (${{trendLabel}})`;
+        }}
       }}
 
       function renderChart(data) {{
@@ -733,7 +1048,7 @@ def bitcoin_page() -> str:
             zeroline: false,
             showline: false,
             tickfont: {{ color: "rgba(148,163,184,0.8)", size: 11 }},
-            tickformat: "%b %-d\\n%Y",
+            tickformat: xAxisTickFormatForRange(activeRange),
             rangeslider: {{ visible: false }},
             automargin: true,
             showspikes: true,
@@ -781,6 +1096,7 @@ def bitcoin_page() -> str:
             high: Number(candle.high),
             low: Number(candle.low),
             close: Number(candle.close),
+            volume: Number(candle.volume ?? 0),
           }}));
           if (!subset.length) {{
             filterStatus.textContent = `No candles in current selection (${{sourceIntervalForRange(activeRange)}} source)`;
@@ -800,6 +1116,7 @@ def bitcoin_page() -> str:
           const hasManualWindow = Boolean(startValue || endValue);
           const label = hasManualWindow ? "Custom Range" : (rangeLabelMap[activeRange] || "Visible Range");
           filterStatus.textContent = `${{label}} (${{subset.length}} candles, ${{sourceIntervalForRange(activeRange)}} source)`;
+          updateMarketContext(subset);
           renderChart(subset);
 
           typeButtons.forEach(btn => {{
@@ -851,11 +1168,28 @@ def trades_page(run_backtest: int = Query(default=0, ge=0, le=1)) -> str:
     portfolio = _portfolio_metrics(snapshot, config.execution.initial_cash_usd)
     decision = _decision_breakdown(latest_cycle, latest_trace)
     trades = list(reversed(state["recent_trades"]))
+    decisions = list(reversed(state["recent_cycles"]))
+    chronological_trades = list(state["recent_trades"])
+    first_dca_buy_timestamp = next(
+        (
+            str(trade.get("timestamp", ""))
+            for trade in chronological_trades
+            if str(trade.get("side", "")).lower() == "buy"
+            and str(trade.get("strategy_name", "") or "DCAStrategy") == "DCAStrategy"
+        ),
+        None,
+    )
     recent_table = (
-        "".join(_format_trade_row(trade) for trade in trades)
+        "".join(_format_trade_row(trade, first_dca_buy_timestamp=first_dca_buy_timestamp) for trade in trades)
         if trades
         else "<tr><td class='empty' colspan='8'>No trades recorded yet.</td></tr>"
     )
+    decision_rows: list[str] = []
+    for index, cycle in enumerate(decisions):
+        cycle_breakdown = _decision_breakdown(cycle, cycle)
+        decision_rows.append(_format_decision_row(cycle, cycle_breakdown, hidden=index >= 10))
+    decision_table = "".join(decision_rows) if decision_rows else "<tr><td class='empty' colspan='7'>No decisions recorded yet.</td></tr>"
+    hidden_decision_count = max(len(decisions) - 10, 0)
     active_swings = list((state["broker_state"] or {}).get("open_swing_positions", []))
     swing_rows = (
         "".join(
@@ -955,17 +1289,9 @@ def trades_page(run_backtest: int = Query(default=0, ge=0, le=1)) -> str:
             <div class="metric light"><div class="metric-label">Last Mark</div><div class="metric-value">${portfolio["last_mark"]:.2f}</div></div>
             <div class="metric light"><div class="metric-label">Unrealized PnL</div><div class="metric-value">${portfolio["unrealized_pnl"]:+.2f} USD</div></div>
             <div class="metric light"><div class="metric-label">Realized PnL</div><div class="metric-value">${portfolio["realized_pnl"]:+.2f} USD</div></div>
+            <div class="metric light"><div class="metric-label">Fees Paid</div><div class="metric-value">${portfolio["total_fees_usd"]:.2f} USD</div></div>
           </div>
         </section>
-        <section class="panel decision-card">
-          <div class="label">Decision Breakdown</div>
-          <div class="value">{escape(str(decision["headline"]))}</div>
-          <ul class="decision-list">
-            {''.join(f"<li>{escape(str(line))}</li>" for line in decision["reason_lines"])}
-          </ul>
-          <p><strong>Interpretation:</strong> {escape(str(decision["interpretation"]))}</p>
-        </section>
-        {backtest_summary}
         <section class="panel">
           <div class="label">Executed Buys and Sells</div>
           <table>
@@ -984,6 +1310,38 @@ def trades_page(run_backtest: int = Query(default=0, ge=0, le=1)) -> str:
             <tbody>{recent_table}</tbody>
           </table>
         </section>
+        <section class="panel decision-card">
+          <div class="label">Decision Breakdown</div>
+          <div class="value" id="decision-headline">{escape(str(decision["headline"]))}</div>
+          <p class="label" id="decision-timestamp" style="margin-top:.45rem;">{escape(_format_display_timestamp(str(decision.get("timestamp", ""))))}</p>
+          <ul class="decision-list" id="decision-reasons">
+            {''.join(f"<li>{escape(str(line))}</li>" for line in decision["reason_lines"])}
+          </ul>
+          <p id="decision-interpretation"><strong>Interpretation:</strong> {escape(str(decision["interpretation"]))}</p>
+        </section>
+        <section class="panel">
+          <div class="label">Decision Log</div>
+          <div class="segmented" style="margin-top:.8rem;">
+            <button class="seg-btn active" id="decision-filter-buy" type="button">Buy</button>
+            <button class="seg-btn" id="decision-filter-all" type="button">All</button>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Timestamp</th>
+                <th>Regime</th>
+                <th>Strategy</th>
+                <th>Decision</th>
+                <th>Signals</th>
+                <th>Executions</th>
+                <th>Interpretation</th>
+              </tr>
+            </thead>
+            <tbody id="decision-log-body">{decision_table}</tbody>
+          </table>
+          {"<button class='ghost' id='decision-log-expand' style='margin-top:.9rem;'>Show 10 more</button>" if hidden_decision_count else ""}
+        </section>
+        {backtest_summary}
       </div>
       <aside class="stack">
         <section class="panel"><div class="label">Execution Modes</div><div class="stack" style="margin-top:.8rem;">{mode_cards}</div></section>
@@ -1004,4 +1362,117 @@ def trades_page(run_backtest: int = Query(default=0, ge=0, le=1)) -> str:
       </aside>
     </section>
     """
-    return _base_html("Trades | Adaptive BTC Trading Agent", "trades", body)
+    script = """
+    <script>
+      const decisionHeadline = document.getElementById("decision-headline");
+      const decisionTimestamp = document.getElementById("decision-timestamp");
+      const decisionReasons = document.getElementById("decision-reasons");
+      const decisionInterpretation = document.getElementById("decision-interpretation");
+      const decisionRows = Array.from(document.querySelectorAll(".decision-row"));
+      const expandButton = document.getElementById("decision-log-expand");
+      const buyFilterButton = document.getElementById("decision-filter-buy");
+      const allFilterButton = document.getElementById("decision-filter-all");
+      let decisionFilter = "BUY";
+      let visibleDecisionCount = 10;
+
+      function setFilterButtons() {
+        if (buyFilterButton) {
+          buyFilterButton.classList.toggle("active", decisionFilter === "BUY");
+        }
+        if (allFilterButton) {
+          allFilterButton.classList.toggle("active", decisionFilter === "ALL");
+        }
+      }
+
+      function filteredDecisionRows() {
+        if (decisionFilter === "ALL") {
+          return decisionRows;
+        }
+        return decisionRows.filter((row) => {
+          const decisionCell = row.querySelector(".decision-cell");
+          return (decisionCell?.textContent || "").trim().toUpperCase() === "BUY";
+        });
+      }
+
+      function refreshDecisionTable() {
+        const matchingRows = filteredDecisionRows();
+        decisionRows.forEach((row) => {
+          row.classList.add("decision-row-hidden");
+        });
+        matchingRows.slice(0, visibleDecisionCount).forEach((row) => {
+          row.classList.remove("decision-row-hidden");
+        });
+
+        if (expandButton) {
+          const hiddenCount = Math.max(matchingRows.length - visibleDecisionCount, 0);
+          expandButton.style.display = hiddenCount > 0 ? "inline-flex" : "none";
+          expandButton.textContent = hiddenCount > 10 ? "Show 10 more" : "Show remaining";
+        }
+
+        const selectedVisible = decisionRows.find((row) => row.classList.contains("decision-row-active") && !row.classList.contains("decision-row-hidden"));
+        if (!selectedVisible) {
+          const firstVisible = matchingRows.find((row) => !row.classList.contains("decision-row-hidden"));
+          if (firstVisible) {
+            applyDecision(firstVisible);
+          }
+        }
+      }
+
+      function applyDecision(row) {
+        if (!row) return;
+        const payload = row.dataset.breakdown;
+        if (!payload) return;
+        const breakdown = JSON.parse(payload);
+        decisionHeadline.textContent = breakdown.headline || "Decision";
+        if (decisionTimestamp) {
+          decisionTimestamp.textContent = breakdown.timestamp || "";
+        }
+        decisionReasons.innerHTML = "";
+        (breakdown.reason_lines || []).forEach((line) => {
+          const item = document.createElement("li");
+          item.textContent = line;
+          decisionReasons.appendChild(item);
+        });
+        decisionInterpretation.innerHTML = `<strong>Interpretation:</strong> ${breakdown.interpretation || ""}`;
+        decisionRows.forEach((candidate) => candidate.classList.remove("decision-row-active"));
+        row.classList.add("decision-row-active");
+      }
+
+      decisionRows.forEach((row) => {
+        row.addEventListener("click", () => applyDecision(row));
+      });
+
+      if (decisionRows.length > 0) {
+        applyDecision(decisionRows[0]);
+      }
+
+      if (expandButton) {
+        expandButton.addEventListener("click", () => {
+          visibleDecisionCount += 10;
+          refreshDecisionTable();
+        });
+      }
+
+      if (buyFilterButton) {
+        buyFilterButton.addEventListener("click", () => {
+          decisionFilter = "BUY";
+          visibleDecisionCount = 10;
+          setFilterButtons();
+          refreshDecisionTable();
+        });
+      }
+
+      if (allFilterButton) {
+        allFilterButton.addEventListener("click", () => {
+          decisionFilter = "ALL";
+          visibleDecisionCount = 10;
+          setFilterButtons();
+          refreshDecisionTable();
+        });
+      }
+
+      setFilterButtons();
+      refreshDecisionTable();
+    </script>
+    """
+    return _base_html("Trades | Adaptive BTC Trading Agent", "trades", body, script)

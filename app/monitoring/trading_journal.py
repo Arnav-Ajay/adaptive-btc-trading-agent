@@ -56,6 +56,14 @@ class TradingJournal:
                     "accepted": result.accepted,
                     "order_id": result.order_id,
                     "reason": result.reason,
+                    "side": result.side.value if result.side is not None else None,
+                    "symbol": result.symbol,
+                    "size_usd": result.size_usd,
+                    "price": result.price,
+                    "strategy_name": result.strategy_name,
+                    "stop_loss": result.stop_loss,
+                    "fee_usd": result.fee_usd,
+                    "realized_pnl_usd": result.realized_pnl_usd,
                 }
                 for result in execution_results
             ],

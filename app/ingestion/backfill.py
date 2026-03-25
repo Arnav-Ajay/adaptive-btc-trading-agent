@@ -39,6 +39,13 @@ class BackfillResult:
     end_at: str
 
 
+def _chunk_span_for_limit(interval_seconds: int, limit: int) -> timedelta:
+    """Return a chunk span that yields at most `limit` candles inclusively."""
+    if limit <= 1:
+        return timedelta(seconds=max(interval_seconds, 1))
+    return timedelta(seconds=interval_seconds * (limit - 1))
+
+
 def _parse_datetime(value: str) -> datetime:
     """Parse an ISO 8601 datetime into UTC."""
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -77,7 +84,7 @@ def run_backfill(
     preprocessor = MarketDataPreprocessor(store)
 
     interval_seconds = CoinbaseClient.interval_seconds(interval)
-    chunk_span = timedelta(seconds=interval_seconds * limit)
+    chunk_span = _chunk_span_for_limit(interval_seconds=interval_seconds, limit=limit)
     step = timedelta(seconds=interval_seconds)
     cursor = start_at.astimezone(UTC)
     hard_end = end_at.astimezone(UTC)

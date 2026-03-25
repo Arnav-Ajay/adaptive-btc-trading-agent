@@ -133,6 +133,12 @@ def _apply_env_overrides(base_config: dict[str, Any], env: dict[str, Any]) -> di
         env.get("PAPER_TRADING_ENABLED"),
         execution.get("paper_trading_enabled", True),
     )
+    execution["paper_fee_bps"] = float(
+        env.get(
+            "PAPER_FEE_BPS",
+            execution.get("paper_fee_bps", 0.0),
+        )
+    )
     execution["paper_state_path"] = env.get(
         "PAPER_STATE_PATH",
         execution.get("paper_state_path", "data_lake/state/paper_broker_state.json"),

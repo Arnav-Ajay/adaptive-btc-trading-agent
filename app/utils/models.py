@@ -98,6 +98,8 @@ class OrderResult:
     price: float = 0.0
     strategy_name: str = ""
     stop_loss: float | None = None
+    fee_usd: float = 0.0
+    realized_pnl_usd: float | None = None
 
 
 @dataclass(slots=True)
@@ -112,6 +114,8 @@ class PortfolioSnapshot:
     last_mark_price: float = 0.0
     dca_btc_units: float = 0.0
     swing_btc_units: float = 0.0
+    realized_pnl_usd: float = 0.0
+    total_fees_usd: float = 0.0
 
 
 @dataclass(slots=True)
@@ -128,6 +132,8 @@ class TradeFill:
     reason: str
     strategy_name: str = ""
     stop_loss: float | None = None
+    fee_usd: float = 0.0
+    realized_pnl_usd: float | None = None
 
 
 @dataclass(slots=True)
@@ -141,6 +147,7 @@ class SwingPosition:
     btc_units: float
     size_usd: float
     opened_at: str
+    entry_fee_usd: float = 0.0
 
 
 @dataclass(slots=True)

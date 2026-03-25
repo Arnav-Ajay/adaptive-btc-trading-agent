@@ -22,6 +22,8 @@ class PaperBrokerState:
     open_swing_positions: list[dict[str, object]]
     last_mark_price: float
     peak_equity: float
+    realized_pnl_usd: float
+    total_fees_usd: float
     updated_at: str
 
 
@@ -41,11 +43,13 @@ class PaperBroker(BrokerInterface):
         btc_units = order.size_usd / order.price if order.price > 0 else 0.0
         order_id = f"paper-{int(datetime.now(UTC).timestamp() * 1000)}"
         strategy_name = self._resolve_strategy_name(order)
+        fee_usd = self._calculate_fee(order.size_usd)
 
-        if order.side is TradeSide.BUY and order.size_usd <= self.state.cash_usd:
-            self.state.cash_usd -= order.size_usd
+        if order.side is TradeSide.BUY and (order.size_usd + fee_usd) <= self.state.cash_usd:
+            self.state.cash_usd -= order.size_usd + fee_usd
+            self.state.total_fees_usd += fee_usd
             if strategy_name == "DCAStrategy":
-                new_total_cost = (self.state.dca_avg_entry_price * self.state.dca_btc_units) + order.size_usd
+                new_total_cost = (self.state.dca_avg_entry_price * self.state.dca_btc_units) + order.size_usd + fee_usd
                 new_total_units = self.state.dca_btc_units + btc_units
                 self.state.dca_btc_units = new_total_units
                 self.state.dca_avg_entry_price = new_total_cost / new_total_units if new_total_units > 0 else 0.0
@@ -59,6 +63,7 @@ class PaperBroker(BrokerInterface):
                         btc_units=btc_units,
                         size_usd=order.size_usd,
                         opened_at=datetime.now(UTC).replace(microsecond=0).isoformat(),
+                        entry_fee_usd=fee_usd,
                     )
                 )
             self._append_fill(
@@ -73,6 +78,7 @@ class PaperBroker(BrokerInterface):
                     reason=order.reason or "filled",
                     strategy_name=strategy_name,
                     stop_loss=order.stop_loss,
+                    fee_usd=fee_usd,
                 )
             )
             self._save_state()
@@ -86,17 +92,26 @@ class PaperBroker(BrokerInterface):
                 price=order.price,
                 strategy_name=strategy_name,
                 stop_loss=order.stop_loss,
+                fee_usd=fee_usd,
             )
 
         if order.side is TradeSide.SELL and self._can_sell(order):
-            self.state.cash_usd += order.size_usd
+            self.state.cash_usd += order.size_usd - fee_usd
+            self.state.total_fees_usd += fee_usd
+            realized_pnl_usd: float | None = None
             if strategy_name == "DCAStrategy":
+                realized_pnl_usd = order.size_usd - fee_usd - (self.state.dca_avg_entry_price * btc_units)
                 self.state.dca_btc_units -= btc_units
                 if self.state.dca_btc_units <= 0:
                     self.state.dca_btc_units = 0.0
                     self.state.dca_avg_entry_price = 0.0
             else:
-                self._remove_swing_position(order_id=order.reason.removeprefix("stop_loss_hit:") if order.reason.startswith("stop_loss_hit:") else "")
+                position = self._remove_swing_position(order_id=order.reason.removeprefix("stop_loss_hit:") if order.reason.startswith("stop_loss_hit:") else "")
+                if position:
+                    entry_cost = float(position.get("size_usd", 0.0)) + float(position.get("entry_fee_usd", 0.0))
+                    realized_pnl_usd = order.size_usd - fee_usd - entry_cost
+            if realized_pnl_usd is not None:
+                self.state.realized_pnl_usd += realized_pnl_usd
             self._append_fill(
                 TradeFill(
                     timestamp=datetime.now(UTC),
@@ -109,6 +124,8 @@ class PaperBroker(BrokerInterface):
                     reason=order.reason or "filled",
                     strategy_name=strategy_name,
                     stop_loss=order.stop_loss,
+                    fee_usd=fee_usd,
+                    realized_pnl_usd=realized_pnl_usd,
                 )
             )
             self._save_state()
@@ -122,6 +139,8 @@ class PaperBroker(BrokerInterface):
                 price=order.price,
                 strategy_name=strategy_name,
                 stop_loss=order.stop_loss,
+                fee_usd=fee_usd,
+                realized_pnl_usd=realized_pnl_usd,
             )
 
         return OrderResult(
@@ -134,13 +153,14 @@ class PaperBroker(BrokerInterface):
             price=order.price,
             strategy_name=strategy_name,
             stop_loss=order.stop_loss,
+            fee_usd=fee_usd,
         )
 
     def get_portfolio_snapshot(self) -> PortfolioSnapshot:
         """Return a point-in-time view of the paper portfolio."""
         swing_units = sum(float(position["btc_units"]) for position in self.state.open_swing_positions)
         total_btc_units = self.state.dca_btc_units + swing_units
-        swing_cost = sum(float(position["size_usd"]) for position in self.state.open_swing_positions)
+        swing_cost = sum(float(position["size_usd"]) + float(position.get("entry_fee_usd", 0.0)) for position in self.state.open_swing_positions)
         total_cost = (self.state.dca_avg_entry_price * self.state.dca_btc_units) + swing_cost
         avg_entry_price = total_cost / total_btc_units if total_btc_units > 0 else 0.0
         equity = self.state.cash_usd + (total_btc_units * self.state.last_mark_price)
@@ -157,6 +177,8 @@ class PaperBroker(BrokerInterface):
             last_mark_price=self.state.last_mark_price,
             dca_btc_units=self.state.dca_btc_units,
             swing_btc_units=swing_units,
+            realized_pnl_usd=self.state.realized_pnl_usd,
+            total_fees_usd=self.state.total_fees_usd,
         )
 
     def mark_price(self, price: float) -> None:
@@ -179,8 +201,7 @@ class PaperBroker(BrokerInterface):
             if not line.strip():
                 continue
             payload = json.loads(line)
-            strategy_name = str(payload.get("strategy_name", "")).strip()
-            if payload.get("side") == TradeSide.BUY.value and strategy_name in {"", "DCAStrategy"}:
+            if payload.get("side") == TradeSide.BUY.value:
                 return float(payload["price"])
         return None
 
@@ -220,6 +241,8 @@ class PaperBroker(BrokerInterface):
                 open_swing_positions=[],
                 last_mark_price=0.0,
                 peak_equity=self.config.execution.initial_cash_usd,
+                realized_pnl_usd=0.0,
+                total_fees_usd=0.0,
                 updated_at=datetime.now(UTC).replace(microsecond=0).isoformat(),
             )
 
@@ -232,8 +255,12 @@ class PaperBroker(BrokerInterface):
                 "open_swing_positions": [],
                 "last_mark_price": payload.get("last_mark_price", 0.0),
                 "peak_equity": payload.get("peak_equity", self.config.execution.initial_cash_usd),
+                "realized_pnl_usd": payload.get("realized_pnl_usd", 0.0),
+                "total_fees_usd": payload.get("total_fees_usd", 0.0),
                 "updated_at": payload.get("updated_at", datetime.now(UTC).replace(microsecond=0).isoformat()),
             }
+        payload.setdefault("realized_pnl_usd", 0.0)
+        payload.setdefault("total_fees_usd", 0.0)
         return PaperBrokerState(**payload)
 
     def _save_state(self) -> None:
@@ -259,6 +286,8 @@ class PaperBroker(BrokerInterface):
             "reason": fill.reason,
             "strategy_name": fill.strategy_name,
             "stop_loss": fill.stop_loss,
+            "fee_usd": fill.fee_usd,
+            "realized_pnl_usd": fill.realized_pnl_usd,
         }
         with self.trade_log_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload) + "\n")
@@ -267,15 +296,19 @@ class PaperBroker(BrokerInterface):
         """Persist a newly opened swing position."""
         self.state.open_swing_positions.append(asdict(position))
 
-    def _remove_swing_position(self, order_id: str) -> None:
+    def _remove_swing_position(self, order_id: str) -> dict[str, object] | None:
         """Remove a swing position from persisted state."""
         if not order_id:
-            return
-        self.state.open_swing_positions = [
-            position
-            for position in self.state.open_swing_positions
-            if str(position.get("position_id", "")) != order_id
-        ]
+            return None
+        removed: dict[str, object] | None = None
+        remaining_positions: list[dict[str, object]] = []
+        for position in self.state.open_swing_positions:
+            if str(position.get("position_id", "")) == order_id and removed is None:
+                removed = position
+                continue
+            remaining_positions.append(position)
+        self.state.open_swing_positions = remaining_positions
+        return removed
 
     def _can_sell(self, order: OrderRequest) -> bool:
         """Return whether a sell request can be satisfied."""
@@ -296,3 +329,7 @@ class PaperBroker(BrokerInterface):
         if "momentum" in order.reason.lower():
             return "SwingATRStrategy"
         return "DCAStrategy"
+
+    def _calculate_fee(self, size_usd: float) -> float:
+        """Calculate notional-based paper trading fees."""
+        return size_usd * (self.config.execution.paper_fee_bps / 10_000)

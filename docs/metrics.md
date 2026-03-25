@@ -13,7 +13,7 @@ It reflects the code that is active today, not the long-term target design.
 - Project perspective: used as the strategy reference price, the paper broker mark price, and the execution reference price.
 
 Example:
-- If the last price is `70,284.96` and the last DCA buy was `70,210.01`, then BTC is slightly above your latest buy, so the DCA drop trigger is unlikely to fire.
+- If the last price is `70,284.96` and the latest buy fill was `70,210.01`, then BTC is slightly above your latest buy, so the DCA drop trigger is unlikely to fire.
 
 ## ATR
 
@@ -35,8 +35,8 @@ Example:
   - Markets are quieter.
   - Stops based on ATR can be tighter.
 - Project perspective:
-  - Currently used by the swing strategy to size a candidate stop loss.
-  - Not yet used in a full active-trade stop-loss lifecycle.
+  - Currently used by the swing strategy to size its stop loss.
+  - Swing stop-loss checks are evaluated before new entries in each trading cycle.
 
 Example:
 - ATR `54.74` on BTC around `70k` means average recent one-minute movement is about `$55`, which is fairly calm.

@@ -17,7 +17,7 @@ from app.config.schema import (
     TradingConfig,
 )
 from app.monitoring.trading_journal import TradingJournal
-from app.utils.models import OrderResult, PortfolioSnapshot
+from app.utils.models import OrderResult, PortfolioSnapshot, TradeSide
 
 
 def _build_config(tmp_path: Path) -> AppConfig:
@@ -68,7 +68,19 @@ def test_trading_journal_persists_cycle_log_and_snapshot(tmp_path) -> None:
         },
         decision_trace=["decision:example"],
         signal_count=1,
-        execution_results=[OrderResult(accepted=True, order_id="paper-1", reason="filled")],
+        execution_results=[
+            OrderResult(
+                accepted=True,
+                order_id="paper-1",
+                reason="filled",
+                side=TradeSide.BUY,
+                symbol="BTC-USD",
+                size_usd=250.0,
+                price=100_000.0,
+                strategy_name="SwingATRStrategy",
+                stop_loss=99_000.0,
+            )
+        ],
         snapshot=snapshot,
         summary="equity_usd=10000.00",
     )
@@ -84,6 +96,12 @@ def test_trading_journal_persists_cycle_log_and_snapshot(tmp_path) -> None:
     assert len(records) == 1
     assert records[0]["cycle"] == 3
     assert records[0]["execution_results"][0]["accepted"] is True
+    assert records[0]["execution_results"][0]["side"] == "buy"
+    assert records[0]["execution_results"][0]["symbol"] == "BTC-USD"
+    assert records[0]["execution_results"][0]["size_usd"] == 250.0
+    assert records[0]["execution_results"][0]["price"] == 100_000.0
+    assert records[0]["execution_results"][0]["strategy_name"] == "SwingATRStrategy"
+    assert records[0]["execution_results"][0]["stop_loss"] == 99_000.0
     assert records[0]["indicator_snapshot"]["last_price"] == 100_000.0
     assert records[0]["decision_trace"] == ["decision:example"]
 

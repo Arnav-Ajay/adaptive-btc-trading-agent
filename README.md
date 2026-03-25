@@ -20,6 +20,7 @@ This repository currently runs three working services:
   - `1month`
 - local parquet market-data lake under `data_lake/`
 - backfill script for historical or missed ingestion windows
+- ingestion gap audit and structured gap event logging
 - persistent ingestion state and healthchecks
 - paper-trading decisions on a 30-minute schedule
 - local parquet-backed trading data reader
@@ -35,6 +36,7 @@ This repository currently runs three working services:
 - persistent paper broker state
 - persistent paper trade ledger
 - persistent cycle log and portfolio snapshot
+- paper trading fees and explicit realized PnL tracking
 - historical backtesting over parquet data
 - backtest metrics:
   - total return
@@ -63,6 +65,8 @@ data_lake/
     interval=1month/
   state/
     coinbase_btc_usd_1m.json
+    ingestion_gap_audit.json
+    ingestion_gap_events.jsonl
     backfill_btc_usd_1m.json
     paper_broker_state.json
     paper_trade_ledger.jsonl

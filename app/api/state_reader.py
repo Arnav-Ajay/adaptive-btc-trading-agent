@@ -40,6 +40,7 @@ def _load_jsonl_records(path: Path, limit: int) -> list[dict[str, Any]]:
 def load_dashboard_state(config: AppConfig) -> dict[str, Any]:
     """Load the latest ingestion and trading artifacts for the dashboard."""
     ingestion_state = _load_json(Path(config.ingestion.state_path))
+    ingestion_gap_audit = _load_json(Path(config.data.data_lake_path) / "state" / "ingestion_gap_audit.json")
     broker_state = _load_json(Path(config.execution.paper_state_path))
     portfolio_snapshot = _load_json(Path(config.execution.paper_snapshot_path))
     latest_cycle = _load_latest_jsonl(Path(config.execution.paper_cycle_log_path))
@@ -72,6 +73,7 @@ def load_dashboard_state(config: AppConfig) -> dict[str, Any]:
 
     return {
         "ingestion_state": ingestion_state,
+        "ingestion_gap_audit": ingestion_gap_audit,
         "broker_state": broker_state,
         "portfolio_snapshot": portfolio_snapshot,
         "latest_cycle": latest_cycle,

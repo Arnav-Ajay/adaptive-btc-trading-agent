@@ -32,26 +32,26 @@ Project perspective:
 
 Current rules:
 
-- If no prior DCA buy fill exists:
+- If no prior buy fill exists:
   - place an initial DCA buy
 - Else:
-  - compute the next dip threshold from the latest DCA buy fill:
+  - compute the next dip threshold from the latest buy fill in the ledger:
     - `latest_buy_fill_price * (1 - dca_drop_percent / 100)`
   - if `last_price <= threshold`, place another DCA buy
   - otherwise skip
 
 Inputs:
 
-- latest DCA buy fill price from the persisted trade ledger
+- latest buy fill price from the persisted trade ledger
 - current last price
 - `dca_drop_percent`
 - `dca_order_size_usd`
 
 Project perspective:
 
-- This is the strongest implemented strategy so far.
 - It is persistent across runs because it reads the prior buy state from the ledger.
 - It does not yet support time-based DCA intervals.
+- It now explains its threshold basis in the Trades-page decision breakdown.
 
 Example:
 
@@ -109,6 +109,7 @@ Project perspective:
 
 - This is the current approximation of the project's intended hybrid behavior.
 - It is used only in bullish regimes.
+- Trades-page decision breakdowns now surface the DCA and swing component outcomes separately when Hybrid produces no trade.
 
 ## Strategy Router
 

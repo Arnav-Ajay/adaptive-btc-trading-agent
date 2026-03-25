@@ -19,10 +19,13 @@ Collection flow: [app/ingestion/collector.py](d:/Users/arnav/Documents/Github_Re
 ```text
 Fetch overlapping BTC-USD 1m candles from Coinbase
 -> retry on failure
+-> detect source-side gaps in fetched candles
 -> normalize into Candle objects
 -> merge with existing parquet partitions
 -> deduplicate by timestamp
 -> rewrite affected partitions
+-> detect recent continuity gaps in canonical 1m parquet
+-> persist gap audit/event files
 -> build derived intervals from canonical 1m data
 -> update ingestion state file
 -> write logs
@@ -45,6 +48,8 @@ Derived intervals currently written:
 State and health:
 
 - ingestion state: [data_lake/state/coinbase_btc_usd_1m.json](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/coinbase_btc_usd_1m.json)
+- ingestion gap audit: [data_lake/state/ingestion_gap_audit.json](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/ingestion_gap_audit.json)
+- ingestion gap events: [data_lake/state/ingestion_gap_events.jsonl](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/ingestion_gap_events.jsonl)
 - ingestion healthcheck: [app/scheduler/healthcheck.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/scheduler/healthcheck.py)
 - ingestion log: [logs/ingestion/ingestion.log](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/logs/ingestion/ingestion.log)
 
@@ -81,6 +86,7 @@ Load config
 -> generate signals
 -> review and size signals
 -> execute paper trades
+-> apply paper fees and update realized PnL
 -> persist broker state, trade ledger, cycle log, and portfolio snapshot
 ```
 
@@ -108,6 +114,11 @@ Persistent trading artifacts:
 - portfolio snapshot: [data_lake/state/paper_portfolio_snapshot.json](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/paper_portfolio_snapshot.json)
 - decision trace: [data_lake/state/paper_decision_trace.jsonl](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/paper_decision_trace.jsonl)
 - trading log: [logs/trading/trading.log](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/logs/trading/trading.log)
+
+Paper-trading accounting:
+
+- fees are applied inside [app/execution/paper_broker.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/execution/paper_broker.py)
+- realized PnL is accumulated in broker state and surfaced in portfolio snapshots
 
 Trading health:
 
