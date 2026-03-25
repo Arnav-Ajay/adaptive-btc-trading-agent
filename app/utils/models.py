@@ -60,6 +60,16 @@ class Signal:
     reason: str
     reference_price: float = 0.0
     stop_loss: float | None = None
+    strategy_name: str = ""
+
+
+@dataclass(slots=True)
+class StrategyOutcome:
+    """Strategy decision bundle including trace details."""
+
+    strategy_name: str
+    signals: list[Signal]
+    trace: list[str]
 
 
 @dataclass(slots=True)
@@ -70,6 +80,9 @@ class OrderRequest:
     symbol: str
     size_usd: float
     price: float
+    reason: str = ""
+    stop_loss: float | None = None
+    strategy_name: str = ""
 
 
 @dataclass(slots=True)
@@ -79,6 +92,12 @@ class OrderResult:
     accepted: bool
     order_id: str
     reason: str
+    side: TradeSide | None = None
+    symbol: str = ""
+    size_usd: float = 0.0
+    price: float = 0.0
+    strategy_name: str = ""
+    stop_loss: float | None = None
 
 
 @dataclass(slots=True)
@@ -89,6 +108,39 @@ class PortfolioSnapshot:
     btc_units: float
     equity_usd: float
     drawdown_percent: float
+    avg_entry_price: float = 0.0
+    last_mark_price: float = 0.0
+    dca_btc_units: float = 0.0
+    swing_btc_units: float = 0.0
+
+
+@dataclass(slots=True)
+class TradeFill:
+    """Executed paper trade fill."""
+
+    timestamp: datetime
+    side: TradeSide
+    symbol: str
+    size_usd: float
+    price: float
+    btc_units: float
+    order_id: str
+    reason: str
+    strategy_name: str = ""
+    stop_loss: float | None = None
+
+
+@dataclass(slots=True)
+class SwingPosition:
+    """Persisted opportunistic swing position with ATR stop-loss."""
+
+    position_id: str
+    symbol: str
+    entry_price: float
+    stop_loss: float
+    btc_units: float
+    size_usd: float
+    opened_at: str
 
 
 @dataclass(slots=True)
@@ -104,7 +156,7 @@ class AgentContext:
     """Runtime context passed into strategies."""
 
     config: AppConfig
-    last_buy_price: float | None = None
+    latest_buy_fill_price: float | None = None
     available_cash_usd: float = field(init=False)
 
     def __post_init__(self) -> None:
