@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from app.config.schema import AppConfig
 from app.data.coinbase_client import CoinbaseClient
 from app.ingestion.parquet_store import ParquetMarketDataStore, WriteResult
+from app.ingestion.preprocessor import MarketDataPreprocessor
 from app.ingestion.state_store import IngestionState, StateStore
 from app.utils.models import Candle
 
@@ -40,6 +41,7 @@ class CoinbaseIngestionService:
             api_secret=config.env.get("COINBASE_API_SECRET", ""),
         )
         self.store = ParquetMarketDataStore(config.data.data_lake_path)
+        self.preprocessor = MarketDataPreprocessor(self.store)
         self.state_store = StateStore(config.ingestion.state_path)
 
     def collect_once(self) -> CollectionResult:
@@ -51,6 +53,10 @@ class CoinbaseIngestionService:
             symbol=self.config.trading.symbol,
             interval=self.config.ingestion.interval,
             candles=records,
+        )
+        derived_results = self.preprocessor.build_all(
+            symbol=self.config.trading.symbol,
+            source_interval=self.config.ingestion.interval,
         )
         ended_at_dt = datetime.now(UTC)
         duration_ms = int((ended_at_dt - started_at_dt).total_seconds() * 1000)
@@ -68,6 +74,14 @@ class CoinbaseIngestionService:
                 "duration_ms": duration_ms,
                 "symbol": self.config.trading.symbol,
                 "interval": self.config.ingestion.interval,
+                "derived_intervals": [
+                    {
+                        "interval": result.interval,
+                        "rows_written": result.write_result.rows_written,
+                        "final_rows_persisted": result.write_result.final_rows_persisted,
+                    }
+                    for result in derived_results
+                ],
             },
         )
         self.state_store.save(state)
@@ -76,7 +90,8 @@ class CoinbaseIngestionService:
         logger.info(
             (
                 "Ingestion cycle complete: symbol=%s interval=%s received=%s "
-                "new_rows=%s final_rows=%s existing_rows=%s partitions=%s latest=%s duration_ms=%s"
+                "new_rows=%s final_rows=%s existing_rows=%s partitions=%s latest=%s "
+                "derived=%s duration_ms=%s"
             ),
             self.config.trading.symbol,
             self.config.ingestion.interval,
@@ -86,6 +101,7 @@ class CoinbaseIngestionService:
             write_result.rows_read_existing,
             write_result.partitions_updated,
             write_result.latest_timestamp,
+            ",".join(result.interval for result in derived_results) if derived_results else "none",
             duration_ms,
         )
         return CollectionResult(

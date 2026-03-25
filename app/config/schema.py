@@ -24,6 +24,9 @@ class DataConfig:
 
     data_lake_path: str = "data_lake"
     trading_lookback: int = 500
+    dashboard_lookback: int = 20000
+    min_candles_required: int = 50
+    max_data_staleness_minutes: int = 90
 
 
 @dataclass(slots=True)
@@ -48,6 +51,9 @@ class RuntimeConfig:
 
     loop_interval_seconds: int = 60
     max_cycles: int | None = 1
+    schedule_minutes: int = 30
+    decision_offset_minutes: int = 2
+    health_max_staleness_minutes: int = 95
 
 
 @dataclass(slots=True)
@@ -79,6 +85,11 @@ class ExecutionConfig:
 
     paper_trading_enabled: bool = True
     initial_cash_usd: float = 10_000.0
+    paper_state_path: str = "data_lake/state/paper_broker_state.json"
+    paper_trade_log_path: str = "data_lake/state/paper_trade_ledger.jsonl"
+    paper_cycle_log_path: str = "data_lake/state/paper_cycle_log.jsonl"
+    paper_snapshot_path: str = "data_lake/state/paper_portfolio_snapshot.json"
+    paper_decision_trace_path: str = "data_lake/state/paper_decision_trace.jsonl"
 
 
 @dataclass(slots=True)

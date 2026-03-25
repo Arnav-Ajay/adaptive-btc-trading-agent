@@ -108,6 +108,12 @@ class CoinbaseClient:
             raise ValueError(f"Unsupported Coinbase interval: {interval}")
         return resolved
 
+    @classmethod
+    def interval_seconds(cls, interval: str) -> int:
+        """Return the seconds-per-candle for a Coinbase interval."""
+        _, seconds = cls._resolve_interval(interval)
+        return seconds
+
     @staticmethod
     def _format_timestamp(value: datetime) -> str:
         """Format timestamps for Coinbase API requests."""

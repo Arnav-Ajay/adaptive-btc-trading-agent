@@ -93,6 +93,10 @@ class ParquetMarketDataStore:
 
     def load_recent_candles(self, symbol: str, interval: str, limit: int) -> list[Candle]:
         """Load the most recent candles from the partitioned parquet store."""
+        return self.load_candles(symbol=symbol, interval=interval, limit=limit)
+
+    def load_candles(self, symbol: str, interval: str, limit: int | None = None) -> list[Candle]:
+        """Load candles from the partitioned parquet store with an optional row limit."""
         symbol_path = self.root_path / f"symbol={symbol}" / f"interval={interval}"
         if not symbol_path.exists():
             return []
@@ -105,12 +109,12 @@ class ParquetMarketDataStore:
         for parquet_file in reversed(parquet_files):
             frames.append(pd.read_parquet(parquet_file))
             combined_rows = sum(len(frame.index) for frame in frames)
-            if combined_rows >= limit:
+            if limit is not None and combined_rows >= limit:
                 break
 
         combined = pd.concat(frames, ignore_index=True)
         combined = combined.drop_duplicates(subset=["timestamp"], keep="last").sort_values("timestamp")
-        recent = combined.tail(limit)
+        recent = combined.tail(limit) if limit is not None else combined
         candles: list[Candle] = []
         for row in recent.to_dict(orient="records"):
             candles.append(

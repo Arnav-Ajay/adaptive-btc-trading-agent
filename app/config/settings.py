@@ -61,6 +61,15 @@ def _apply_env_overrides(base_config: dict[str, Any], env: dict[str, Any]) -> di
 
     data["data_lake_path"] = env.get("DATA_LAKE_PATH", data.get("data_lake_path", "data_lake"))
     data["trading_lookback"] = int(env.get("TRADING_LOOKBACK", data.get("trading_lookback", 500)))
+    data["dashboard_lookback"] = int(
+        env.get("DASHBOARD_LOOKBACK", data.get("dashboard_lookback", 20000))
+    )
+    data["min_candles_required"] = int(
+        env.get("MIN_CANDLES_REQUIRED", data.get("min_candles_required", 50))
+    )
+    data["max_data_staleness_minutes"] = int(
+        env.get("MAX_DATA_STALENESS_MINUTES", data.get("max_data_staleness_minutes", 90))
+    )
 
     ingestion["provider"] = env.get("INGESTION_PROVIDER", ingestion.get("provider", "coinbase"))
     ingestion["enabled"] = _parse_bool(env.get("INGESTION_ENABLED"), ingestion.get("enabled", True))
@@ -94,6 +103,18 @@ def _apply_env_overrides(base_config: dict[str, Any], env: dict[str, Any]) -> di
         env.get("MAX_CYCLES"),
         runtime.get("max_cycles", 1),
     )
+    runtime["schedule_minutes"] = int(
+        env.get("RUNTIME_SCHEDULE_MINUTES", runtime.get("schedule_minutes", 30))
+    )
+    runtime["decision_offset_minutes"] = int(
+        env.get("RUNTIME_DECISION_OFFSET_MINUTES", runtime.get("decision_offset_minutes", 2))
+    )
+    runtime["health_max_staleness_minutes"] = int(
+        env.get(
+            "RUNTIME_HEALTH_MAX_STALENESS_MINUTES",
+            runtime.get("health_max_staleness_minutes", 95),
+        )
+    )
 
     logging["level"] = env.get("LOG_LEVEL", logging.get("level", "INFO"))
     llm["model"] = env.get("OPENAI_MODEL", llm.get("model", "gpt-5.4-mini"))
@@ -111,6 +132,26 @@ def _apply_env_overrides(base_config: dict[str, Any], env: dict[str, Any]) -> di
     execution["paper_trading_enabled"] = _parse_bool(
         env.get("PAPER_TRADING_ENABLED"),
         execution.get("paper_trading_enabled", True),
+    )
+    execution["paper_state_path"] = env.get(
+        "PAPER_STATE_PATH",
+        execution.get("paper_state_path", "data_lake/state/paper_broker_state.json"),
+    )
+    execution["paper_trade_log_path"] = env.get(
+        "PAPER_TRADE_LOG_PATH",
+        execution.get("paper_trade_log_path", "data_lake/state/paper_trade_ledger.jsonl"),
+    )
+    execution["paper_cycle_log_path"] = env.get(
+        "PAPER_CYCLE_LOG_PATH",
+        execution.get("paper_cycle_log_path", "data_lake/state/paper_cycle_log.jsonl"),
+    )
+    execution["paper_snapshot_path"] = env.get(
+        "PAPER_SNAPSHOT_PATH",
+        execution.get("paper_snapshot_path", "data_lake/state/paper_portfolio_snapshot.json"),
+    )
+    execution["paper_decision_trace_path"] = env.get(
+        "PAPER_DECISION_TRACE_PATH",
+        execution.get("paper_decision_trace_path", "data_lake/state/paper_decision_trace.jsonl"),
     )
 
     merged = dict(base_config)
