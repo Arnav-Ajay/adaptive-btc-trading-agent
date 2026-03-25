@@ -8,7 +8,10 @@
   },
   "data": {
     "data_lake_path": "data_lake",
-    "trading_lookback": 500
+    "trading_lookback": 500,
+    "dashboard_lookback": 20000,
+    "min_candles_required": 50,
+    "max_data_staleness_minutes": 90
   },
   "ingestion": {
     "provider": "coinbase",
@@ -24,7 +27,10 @@
   },
   "runtime": {
     "loop_interval_seconds": 60,
-    "max_cycles": 1
+    "max_cycles": 1,
+    "schedule_minutes": 30,
+    "decision_offset_minutes": 2,
+    "health_max_staleness_minutes": 95
   },
   "logging": {
     "level": "INFO"
@@ -39,6 +45,11 @@
   },
   "execution": {
     "paper_trading_enabled": true,
-    "initial_cash_usd": 10000.0
+    "initial_cash_usd": 10000.0,
+    "paper_state_path": "data_lake/state/paper_broker_state.json",
+    "paper_trade_log_path": "data_lake/state/paper_trade_ledger.jsonl",
+    "paper_cycle_log_path": "data_lake/state/paper_cycle_log.jsonl",
+    "paper_snapshot_path": "data_lake/state/paper_portfolio_snapshot.json",
+    "paper_decision_trace_path": "data_lake/state/paper_decision_trace.jsonl"
   }
 }
