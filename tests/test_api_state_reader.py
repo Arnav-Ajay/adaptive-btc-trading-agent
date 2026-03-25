@@ -1,0 +1,62 @@
+"""Tests for dashboard state loading."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from app.api.state_reader import load_dashboard_state
+from app.config.schema import (
+    AppConfig,
+    DataConfig,
+    ExecutionConfig,
+    IngestionConfig,
+    LLMConfig,
+    LoggingConfig,
+    NotificationConfig,
+    RuntimeConfig,
+    TradingConfig,
+)
+
+
+def _build_config(tmp_path: Path) -> AppConfig:
+    state_dir = tmp_path / "state"
+    return AppConfig(
+        trading=TradingConfig(),
+        data=DataConfig(data_lake_path=str(tmp_path)),
+        ingestion=IngestionConfig(state_path=str(state_dir / "ingestion.json")),
+        runtime=RuntimeConfig(),
+        logging=LoggingConfig(),
+        notifications=NotificationConfig(),
+        llm=LLMConfig(),
+        execution=ExecutionConfig(
+            paper_state_path=str(state_dir / "broker_state.json"),
+            paper_trade_log_path=str(state_dir / "trade.jsonl"),
+            paper_cycle_log_path=str(state_dir / "cycle.jsonl"),
+            paper_snapshot_path=str(state_dir / "snapshot.json"),
+            paper_decision_trace_path=str(state_dir / "trace.jsonl"),
+        ),
+        env={},
+        cache_path="",
+    )
+
+
+def test_load_dashboard_state_reads_latest_artifacts(tmp_path) -> None:
+    """Dashboard state loader should assemble the latest runtime artifacts."""
+    config = _build_config(tmp_path)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+
+    (state_dir / "ingestion.json").write_text(json.dumps({"provider": "coinbase"}), encoding="utf-8")
+    (state_dir / "snapshot.json").write_text(json.dumps({"snapshot": {"equity_usd": 10_000.0}}), encoding="utf-8")
+    (state_dir / "trade.jsonl").write_text(json.dumps({"side": "buy"}) + "\n", encoding="utf-8")
+    (state_dir / "cycle.jsonl").write_text(json.dumps({"cycle": 4}) + "\n", encoding="utf-8")
+    (state_dir / "trace.jsonl").write_text(json.dumps({"strategy_name": "DCAStrategy"}) + "\n", encoding="utf-8")
+
+    state = load_dashboard_state(config)
+    assert state["ingestion_state"]["provider"] == "coinbase"
+    assert state["broker_state"] is None
+    assert state["portfolio_snapshot"]["snapshot"]["equity_usd"] == 10_000.0
+    assert state["latest_trade"]["side"] == "buy"
+    assert state["latest_cycle"]["cycle"] == 4
+    assert state["latest_trace"]["strategy_name"] == "DCAStrategy"
