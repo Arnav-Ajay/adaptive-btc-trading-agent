@@ -79,6 +79,11 @@ def test_trading_journal_persists_cycle_log_and_snapshot(tmp_path) -> None:
                 price=100_000.0,
                 strategy_name="SwingATRStrategy",
                 stop_loss=99_000.0,
+                fee_usd=1.25,
+                spread_cost_usd=0.25,
+                slippage_cost_usd=0.25,
+                execution_cost_usd=1.75,
+                reference_price=99_800.0,
             )
         ],
         snapshot=snapshot,
@@ -102,6 +107,11 @@ def test_trading_journal_persists_cycle_log_and_snapshot(tmp_path) -> None:
     assert records[0]["execution_results"][0]["price"] == 100_000.0
     assert records[0]["execution_results"][0]["strategy_name"] == "SwingATRStrategy"
     assert records[0]["execution_results"][0]["stop_loss"] == 99_000.0
+    assert records[0]["execution_results"][0]["fee_usd"] == 1.25
+    assert records[0]["execution_results"][0]["spread_cost_usd"] == 0.25
+    assert records[0]["execution_results"][0]["slippage_cost_usd"] == 0.25
+    assert records[0]["execution_results"][0]["execution_cost_usd"] == 1.75
+    assert records[0]["execution_results"][0]["reference_price"] == 99_800.0
     assert records[0]["indicator_snapshot"]["last_price"] == 100_000.0
     assert records[0]["decision_trace"] == ["decision:example"]
 

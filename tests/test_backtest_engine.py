@@ -47,3 +47,23 @@ def test_backtest_engine_replays_parquet_history(tmp_path) -> None:
     assert result.metrics.filled_trade_count >= 1
     assert result.final_snapshot.cash_usd < config.execution.initial_cash_usd
 
+
+def test_backtest_engine_halts_when_drawdown_limit_is_breached(tmp_path) -> None:
+    """Replay should stop once the portfolio drawdown guard is breached."""
+    config = load_config()
+    config.data.data_lake_path = str(tmp_path)
+    config.data.min_candles_required = 20
+    config.trading.dca_order_size_usd = 100.0
+    config.trading.max_drawdown_percent = 0.05
+    config.execution.initial_cash_usd = 1_000.0
+
+    store = ParquetMarketDataStore(str(tmp_path))
+    _write_backtest_candles(store)
+
+    engine = BacktestEngine(config=config)
+    result = engine.run(symbol="BTC-USD", interval="1m")
+
+    assert result.halted_reason == "max_drawdown_reached"
+    assert result.halted_at is not None
+    assert result.steps[-1].decision == "HALT"
+

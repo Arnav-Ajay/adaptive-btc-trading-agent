@@ -9,6 +9,7 @@ Entry point: [app/scheduler/collector_runner.py](d:/Users/arnav/Documents/Github
 ```text
 Load config
 -> configure ingestion logging
+-> if no ingestion state and no canonical data exist, queue an immediate bootstrap collection
 -> compute next aligned 30-minute boundary
 -> start APScheduler
 -> trigger CoinbaseIngestionService.collect_once()
@@ -62,12 +63,13 @@ Read start/end arguments
 -> fetch historical windows from Coinbase within API limits
 -> write canonical 1m parquet data
 -> build the same derived intervals
--> update backfill state
+-> update the main ingestion state file
 ```
 
-Backfill state:
+Backfill notes:
 
-- [data_lake/state/backfill_btc_usd_1m.json](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/backfill_btc_usd_1m.json)
+- backfill updates [data_lake/state/coinbase_btc_usd_1m.json](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/coinbase_btc_usd_1m.json), so ingestion healthchecks and clean bootstrap runs see the restored history
+- on Windows, large local backfills should be run with the Docker stack stopped to avoid parquet file-replace conflicts while containers are reading from the lake
 
 ## 3. Scheduled Paper-Trading Flow
 
@@ -85,8 +87,9 @@ Load config
 -> choose strategy stack
 -> generate signals
 -> review and size signals
--> execute paper trades
--> apply paper fees and update realized PnL
+-> execute paper trades through fee/spread/slippage model
+-> if a swing stop-loss exit fired, skip new entries for that cycle
+-> update realized PnL and cumulative execution costs
 -> persist broker state, trade ledger, cycle log, and portfolio snapshot
 ```
 
@@ -117,7 +120,11 @@ Persistent trading artifacts:
 
 Paper-trading accounting:
 
-- fees are applied inside [app/execution/paper_broker.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/execution/paper_broker.py)
+- execution costs are applied inside [app/execution/paper_broker.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/execution/paper_broker.py)
+- the current model tracks separately:
+  - fees
+  - spread cost
+  - slippage cost
 - realized PnL is accumulated in broker state and surfaced in portfolio snapshots
 
 Trading health:
@@ -135,9 +142,13 @@ State loader:
 ```text
 Read ingestion state
 -> read trading state and ledger files
+-> read saved backtest history and latest saved backtest
 -> load chart candles from local parquet
 -> render Bitcoin page
--> render Trades page
+-> render Trades page subviews:
+   - Paper
+   - Backtest
+   - Simulation placeholder
 -> expose JSON health/state endpoints
 ```
 
@@ -154,6 +165,7 @@ Current JSON endpoints:
 - `/api/trading`
 - `/api/candles`
 - `/api/trades`
+- `/api/backtest`
 
 ## 5. Backtest Flow
 
@@ -164,10 +176,13 @@ Load historical candles from parquet
 -> replay candles sequentially from minimum-history threshold onward
 -> compute the same indicators used by the live trading runtime
 -> evaluate open swing stop-losses
+-> stop early if swing stop-loss exits fire
 -> run the same regime and strategy path
+-> stop early if the portfolio drawdown guard is breached
 -> execute on an isolated paper broker state
 -> record equity curve and trades
 -> compute replay metrics
+-> persist latest run and append to backtest history
 ```
 
 Backtest metrics:
@@ -178,6 +193,11 @@ Backtest metrics:
 - Sharpe ratio
 - filled trade count
 - closed swing trade win rate
+
+Saved backtest artifacts:
+
+- latest run: [data_lake/state/backtest_latest.json](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/backtest_latest.json)
+- run history: [data_lake/state/backtest_history.jsonl](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/backtest_history.jsonl)
 
 ## 6. Runtime Boundaries
 

@@ -99,6 +99,10 @@ class OrderResult:
     strategy_name: str = ""
     stop_loss: float | None = None
     fee_usd: float = 0.0
+    spread_cost_usd: float = 0.0
+    slippage_cost_usd: float = 0.0
+    execution_cost_usd: float = 0.0
+    reference_price: float = 0.0
     realized_pnl_usd: float | None = None
 
 
@@ -116,6 +120,8 @@ class PortfolioSnapshot:
     swing_btc_units: float = 0.0
     realized_pnl_usd: float = 0.0
     total_fees_usd: float = 0.0
+    total_spread_cost_usd: float = 0.0
+    total_slippage_cost_usd: float = 0.0
 
 
 @dataclass(slots=True)
@@ -133,6 +139,10 @@ class TradeFill:
     strategy_name: str = ""
     stop_loss: float | None = None
     fee_usd: float = 0.0
+    spread_cost_usd: float = 0.0
+    slippage_cost_usd: float = 0.0
+    execution_cost_usd: float = 0.0
+    reference_price: float = 0.0
     realized_pnl_usd: float | None = None
 
 
@@ -148,6 +158,8 @@ class SwingPosition:
     size_usd: float
     opened_at: str
     entry_fee_usd: float = 0.0
+    entry_spread_cost_usd: float = 0.0
+    entry_slippage_cost_usd: float = 0.0
 
 
 @dataclass(slots=True)

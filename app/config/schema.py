@@ -85,6 +85,10 @@ class ExecutionConfig:
 
     paper_trading_enabled: bool = True
     initial_cash_usd: float = 10_000.0
+    execution_cost_preset: str = "simple"
+    fee_pct: float = 0.001
+    spread_pct: float = 0.0005
+    slippage_pct: float = 0.0005
     paper_fee_bps: float = 0.0
     paper_state_path: str = "data_lake/state/paper_broker_state.json"
     paper_trade_log_path: str = "data_lake/state/paper_trade_ledger.jsonl"

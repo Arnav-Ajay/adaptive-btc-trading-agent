@@ -36,7 +36,11 @@ This repository currently runs three working services:
 - persistent paper broker state
 - persistent paper trade ledger
 - persistent cycle log and portfolio snapshot
-- paper trading fees and explicit realized PnL tracking
+- deterministic execution-cost model:
+  - trading fee
+  - spread
+  - slippage
+- explicit realized PnL tracking
 - historical backtesting over parquet data
 - backtest metrics:
   - total return
@@ -45,9 +49,13 @@ This repository currently runs three working services:
   - Sharpe ratio
   - filled trade count
   - closed swing trade win rate
+- saved backtest history and replay-step decision traces
 - FastAPI UI/API with:
   - Bitcoin market page
-  - Trades page
+  - Trades page with:
+    - Paper
+    - Backtest
+    - Simulation subviews
   - JSON endpoints
 - Dockerized ingestor, trading, and dashboard services with healthchecks
 
@@ -73,6 +81,8 @@ data_lake/
     paper_cycle_log.jsonl
     paper_portfolio_snapshot.json
     paper_decision_trace.jsonl
+    backtest_latest.json
+    backtest_history.jsonl
 
 logs/
   ingestion/
@@ -88,6 +98,43 @@ python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
 ```
+
+## First Startup
+
+Canonical first-run flow:
+
+1. Clone the repository.
+2. Copy `.env.example` to `.env`.
+3. Fill the required values in `.env`.
+4. Build the Docker services once:
+
+```bash
+docker compose up -d --build
+```
+
+5. Bring the stack down before running a large local backfill:
+
+```bash
+docker compose down
+```
+
+6. Run the historical backfill:
+
+```bash
+python -m app.ingestion.backfill --start 2026-01-01T00:00:00Z
+```
+
+7. Bring the stack back up:
+
+```bash
+docker compose up -d
+```
+
+Notes:
+
+- Yes, backfill-first is valid now. The backfill writes the main ingestion state file, so the ingestor healthcheck will see that bootstrap history.
+- On Windows, run large local backfills with the Docker stack stopped. The parquet writer uses atomic file replacement, and open file handles from running containers can cause `PermissionError` during bulk backfill.
+- If you skip backfill entirely, the ingestor now performs an immediate bootstrap collection on first startup instead of waiting for the next 30-minute boundary.
 
 Run the ingestor:
 
@@ -123,6 +170,14 @@ result = BacktestEngine(load_config()).run(symbol="BTC-USD", interval="1m")
 print(result.metrics)
 ```
 
+Backtest notes:
+
+- backtests use the same fee/spread/slippage execution model as paper trading
+- backtests persist the latest run and append to history under `data_lake/state/`
+- backtests can halt early on:
+  - max drawdown guard
+  - swing stop-loss trigger
+
 Run the FastAPI dashboard/API:
 
 ```bash
@@ -156,6 +211,14 @@ Check status:
 
 ```bash
 docker compose ps
+```
+
+Safe Windows backfill workflow:
+
+```bash
+docker compose down
+python -m app.ingestion.backfill --start 2026-01-01T00:00:00Z
+docker compose up -d --build market-data-ingestor trading-agent dashboard-api
 ```
 
 ## Current Docs

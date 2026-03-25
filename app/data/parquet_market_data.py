@@ -24,10 +24,10 @@ class ParquetMarketDataClient:
             limit=self.config.data.trading_lookback,
         )
 
-    def fetch_dashboard_candles(self, interval: str | None = None) -> list[Candle]:
+    def fetch_dashboard_candles(self, interval: str | None = None, limit: int | None = None) -> list[Candle]:
         """Load a deeper candle history for UI/charting use cases."""
         return self.store.load_candles(
             symbol=self.config.trading.symbol,
             interval=interval or self.config.ingestion.interval,
-            limit=self.config.data.dashboard_lookback,
+            limit=limit if limit is not None else self.config.data.dashboard_lookback,
         )

@@ -63,6 +63,10 @@ class TradingJournal:
                     "strategy_name": result.strategy_name,
                     "stop_loss": result.stop_loss,
                     "fee_usd": result.fee_usd,
+                    "spread_cost_usd": result.spread_cost_usd,
+                    "slippage_cost_usd": result.slippage_cost_usd,
+                    "execution_cost_usd": result.execution_cost_usd,
+                    "reference_price": result.reference_price,
                     "realized_pnl_usd": result.realized_pnl_usd,
                 }
                 for result in execution_results

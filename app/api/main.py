@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
@@ -12,6 +13,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.backtest.engine import BacktestEngine
+from app.backtest.history import save_backtest_result
 from app.api.state_reader import load_dashboard_state
 from app.config.settings import load_config
 
@@ -133,7 +135,43 @@ def _base_html(title: str, active: str, body: str, script: str = "") -> str:
           .mini-row .mini-value {{ font-weight:700; }}
           .value-positive {{ color:#15803d; }}
           .value-negative {{ color:#b42318; }}
-          @media (max-width:1050px) {{ .banner,.page-grid,.subgrid,.status-strip,.btc-layout,.market-stats,.chart-toolbar-grid,.filter-grid {{ grid-template-columns:1fr; }} .footer {{ flex-direction:column; align-items:flex-start; }} .market-price-row,.market-top {{ flex-direction:column; align-items:flex-start; }} }}
+          .trade-page {{ display:grid; gap:1rem; }}
+          .trade-hero {{ padding:0; overflow:hidden; background:linear-gradient(145deg,#0f1724 0%,#16263a 58%,#224766 100%); color:#f5f9ff; border:none; }}
+          .trade-hero-top {{ display:flex; justify-content:space-between; gap:1rem; align-items:flex-start; padding:1.2rem 1.25rem 0; }}
+          .trade-hero-title {{ font-size:1.7rem; font-weight:800; letter-spacing:-.02em; }}
+          .trade-hero-sub {{ color:rgba(229,236,246,.74); margin-top:.22rem; max-width:760px; font-size:.93rem; }}
+          .trade-hero .label {{ color:rgba(226,236,249,.72); }}
+          .trade-mode-pills {{ display:flex; gap:.55rem; flex-wrap:wrap; }}
+          .trade-mode-pill {{ display:inline-flex; align-items:center; justify-content:center; padding:.55rem .9rem; min-width:108px; border-radius:999px; background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.10); color:#f5f9ff; font-size:.8rem; font-weight:700; text-decoration:none; }}
+          .trade-mode-pill.active {{ background:#fff; color:#132033; border-color:#fff; }}
+          .trade-banner {{ display:grid; grid-template-columns:repeat(6,1fr); gap:.8rem; padding:1rem 1.25rem 1.2rem; }}
+          .trade-banner-card {{ padding:.9rem .95rem; border-radius:16px; background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.09); }}
+          .trade-banner-card .metric-label {{ color:rgba(229,236,246,.72); font-size:.76rem; text-transform:uppercase; letter-spacing:.05em; }}
+          .trade-banner-card .metric-value {{ margin-top:.28rem; font-weight:800; font-size:1.08rem; }}
+          .trade-layout {{ display:grid; grid-template-columns:minmax(0,1.45fr) 340px; gap:1rem; }}
+          .trade-main,.trade-side {{ display:grid; gap:1rem; }}
+          .trade-section {{ padding:1.05rem; background:#fff; border:1px solid #d9e1ea; border-radius:20px; box-shadow:0 16px 34px rgba(16,24,40,.06); }}
+          .trade-section-head {{ display:flex; justify-content:space-between; align-items:flex-start; gap:1rem; margin-bottom:.85rem; }}
+          .trade-section-title {{ font-size:1.22rem; font-weight:800; letter-spacing:-.02em; }}
+          .trade-section-note {{ color:#667085; font-size:.9rem; max-width:720px; }}
+          .trade-split {{ display:grid; grid-template-columns:1.1fr .9fr; gap:1rem; }}
+          .trade-card-soft {{ background:#f8fafc; border:1px solid #e4e8ef; border-radius:18px; padding:1rem; }}
+          .trade-chart-card {{ padding:1rem; background:linear-gradient(180deg,#fff 0%,#f8fbff 100%); }}
+          .trade-chart-frame {{ padding:.55rem; background:linear-gradient(180deg,#0d1520 0%,#13233b 100%); border-radius:24px; }}
+          .trade-chart-frame .chart-surface {{ border-radius:18px; }}
+          .trade-table-wrap {{ overflow:auto; }}
+          .trade-note-strip {{ display:flex; gap:.55rem; flex-wrap:wrap; margin-top:.65rem; }}
+          .trade-note-pill {{ display:inline-flex; align-items:center; padding:.38rem .7rem; border-radius:999px; background:#eef2f7; color:#475467; font-size:.8rem; font-weight:700; }}
+          .trade-side .panel,.trade-side .trade-section {{ box-shadow:0 16px 34px rgba(16,24,40,.06); }}
+          .simulation-card {{ min-height:260px; display:grid; align-content:start; gap:.75rem; background:linear-gradient(180deg,#fff 0%,#f8fbff 100%); }}
+          .simulation-card .value {{ font-size:1.5rem; }}
+          .history-stack {{ display:grid; gap:.55rem; margin-top:.8rem; }}
+          .history-link {{ display:grid; gap:.18rem; padding:.75rem .85rem; border-radius:16px; border:1px solid #d9e1ea; background:#f8fafc; color:#475467; text-decoration:none; }}
+          .history-link.active {{ background:#fff; border-color:#b9c6d8; box-shadow:0 10px 20px rgba(16,24,40,.08); color:#132033; }}
+          .history-link-meta {{ color:#667085; font-size:.76rem; text-transform:uppercase; letter-spacing:.05em; }}
+          .history-link-main {{ font-weight:800; font-size:1rem; }}
+          .history-link-sub {{ color:#667085; font-size:.86rem; }}
+          @media (max-width:1050px) {{ .banner,.page-grid,.subgrid,.status-strip,.btc-layout,.market-stats,.chart-toolbar-grid,.filter-grid,.trade-layout,.trade-banner,.trade-split {{ grid-template-columns:1fr; }} .footer {{ flex-direction:column; align-items:flex-start; }} .market-price-row,.market-top,.trade-hero-top {{ flex-direction:column; align-items:flex-start; }} }}
         </style>
       </head>
       <body><div class="shell">{_nav(active)}{body}<footer class="footer"><div>Built by <strong>Arnav</strong> / <strong>Kaijo</strong></div><div class="footer-meta"><span>Adaptive BTC Trading Agent</span><span class="footer-sep">|</span><a href="https://github.com/Arnav-Ajay" target="_blank" rel="noreferrer">GitHub</a></div></footer></div>{script}</body>
@@ -180,6 +218,8 @@ def _portfolio_metrics(snapshot: dict[str, object], initial_cash: float) -> dict
     last_mark = float(snapshot.get("last_mark_price", 0.0))
     realized = float(snapshot.get("realized_pnl_usd", 0.0))
     total_fees = float(snapshot.get("total_fees_usd", 0.0))
+    total_spread = float(snapshot.get("total_spread_cost_usd", 0.0))
+    total_slippage = float(snapshot.get("total_slippage_cost_usd", 0.0))
     unrealized = ((last_mark - avg_entry) * btc_units) if btc_units > 0 and avg_entry > 0 else 0.0
     total_pnl = realized + unrealized
     exposure = 0.0 if equity <= 0 else ((btc_units * last_mark) / equity) * 100
@@ -188,6 +228,9 @@ def _portfolio_metrics(snapshot: dict[str, object], initial_cash: float) -> dict
         "total_pnl": total_pnl, "unrealized_pnl": unrealized, "realized_pnl": realized, "exposure_percent": exposure,
         "dca_btc_units": float(snapshot.get("dca_btc_units", 0.0)), "swing_btc_units": float(snapshot.get("swing_btc_units", 0.0)),
         "total_fees_usd": total_fees,
+        "total_spread_cost_usd": total_spread,
+        "total_slippage_cost_usd": total_slippage,
+        "total_execution_cost_usd": total_fees + total_spread + total_slippage,
     }
 
 
@@ -428,6 +471,15 @@ def _format_trade_row(trade: dict[str, object], first_dca_buy_timestamp: str | N
         signal_type = "Momentum"
     side = escape(str(trade.get("side", "")).upper())
     strategy_label = escape(strategy.replace("Strategy", ""))
+    execution_cost_usd = float(
+        trade.get(
+            "execution_cost_usd",
+            float(trade.get("fee_usd", 0.0) or 0.0)
+            + float(trade.get("spread_cost_usd", 0.0) or 0.0)
+            + float(trade.get("slippage_cost_usd", 0.0) or 0.0),
+        )
+        or 0.0
+    )
     return (
         "<tr>"
         f"<td>{escape(_format_display_timestamp(str(trade.get('timestamp', ''))))}</td>"
@@ -436,6 +488,7 @@ def _format_trade_row(trade: dict[str, object], first_dca_buy_timestamp: str | N
         f"<td>${float(trade.get('size_usd', 0)):.2f} USD</td>"
         f"<td>${float(trade.get('price', 0)):.2f}</td>"
         f"<td>{float(trade.get('btc_units', 0)):.6f} BTC</td>"
+        f"<td>${execution_cost_usd:.2f}</td>"
         f"<td>{strategy_label}</td>"
         f"<td>{escape(signal_type)}</td>"
         "</tr>"
@@ -474,6 +527,48 @@ def _format_decision_row(cycle: dict[str, object], breakdown: dict[str, object],
     )
 
 
+def _backtest_step_breakdown(step: dict[str, object]) -> dict[str, object]:
+    """Render a saved backtest step as a readable decision breakdown."""
+    decision = str(step.get("decision", "n/a")).upper()
+    trace = [str(line) for line in (step.get("trace") or [])]
+    interpretation_map = {
+        "BUY": "The replay engine found an executable entry and recorded a fill under the historical execution model.",
+        "SELL": "The replay engine closed exposure during this step, usually from a stop-loss or explicit exit condition.",
+        "HOLD": "Signals were evaluated in this step, but none were converted into an execution.",
+        "NO BUY": "The replay engine evaluated the market state and kept the portfolio unchanged.",
+        "HALT": "The replay engine stopped early because a risk guard was breached.",
+    }
+    return {
+        "headline": f"Decision: {decision}",
+        "decision": decision,
+        "reason_lines": trace or ["No replay trace recorded for this step."],
+        "interpretation": interpretation_map.get(
+            decision,
+            "The replay engine processed this step and preserved the current portfolio state.",
+        ),
+        "timestamp": _format_display_timestamp(str(step.get("timestamp", ""))),
+    }
+
+
+def _format_backtest_decision_row(step: dict[str, object], hidden: bool = False) -> str:
+    """Render one replay-step row for the backtest decision log."""
+    row_classes = ["backtest-decision-row"]
+    if hidden:
+        row_classes.append("decision-row-hidden")
+    breakdown = _backtest_step_breakdown(step)
+    payload = escape(json.dumps(breakdown))
+    return (
+        f"<tr class=\"{' '.join(row_classes)}\" data-breakdown=\"{payload}\">"
+        f"<td>{escape(_format_display_timestamp(str(step.get('timestamp', ''))))}</td>"
+        f"<td>{escape(str(step.get('regime', 'n/a')).upper())}</td>"
+        f"<td>{escape(str(step.get('strategy_name', 'n/a')).replace('Strategy', ''))}</td>"
+        f"<td class=\"decision-cell\">{escape(str(step.get('decision', 'n/a')).upper())}</td>"
+        f"<td>{int(step.get('signal_count', 0))}</td>"
+        f"<td>{int(step.get('execution_count', 0))}</td>"
+        f"<td>${float(step.get('equity_usd', 0.0)):.2f}</td>"
+        "</tr>"
+    )
+
 def _format_display_timestamp(value: str | None) -> str:
     """Format an ISO timestamp for UI display."""
     if not value:
@@ -491,9 +586,10 @@ def _parse_optional_iso_datetime(value: str | None) -> datetime | None:
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"invalid_datetime:{value}") from exc
+    return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def _default_backtest_start(interval: str, end_at: datetime | None) -> datetime | None:
@@ -509,6 +605,23 @@ def _default_backtest_start(interval: str, end_at: datetime | None) -> datetime 
     if interval == "1hr":
         return end_at - timedelta(days=120)
     return end_at - timedelta(days=365)
+
+
+def _configured_backtest_config(
+    *,
+    base_config,
+    execution_cost_preset: str,
+    fee_pct: float,
+    spread_pct: float,
+    slippage_pct: float,
+) -> object:
+    """Clone config and apply backtest-specific execution-cost overrides."""
+    config = copy.deepcopy(base_config)
+    config.execution.execution_cost_preset = execution_cost_preset
+    config.execution.fee_pct = fee_pct
+    config.execution.spread_pct = spread_pct
+    config.execution.slippage_pct = slippage_pct
+    return config
 
 
 @app.get("/health")
@@ -536,7 +649,7 @@ def api_ingestion() -> dict[str, object] | dict[str, str]:
 @app.get("/api/trading")
 def api_trading() -> dict[str, object]:
     """Return the latest trading-related artifacts."""
-    state = load_dashboard_state(load_config())
+    state = load_dashboard_state(load_config(), include_candles=False)
     return {"portfolio_snapshot": state["portfolio_snapshot"], "latest_cycle": state["latest_cycle"], "latest_trace": state["latest_trace"], "latest_trade": state["latest_trade"], "recent_trades": state["recent_trades"]}
 
 
@@ -554,7 +667,7 @@ def api_candles(limit: int = Query(default=500, ge=10, le=2000), start: str | No
 @app.get("/api/trades")
 def api_trades(limit: int = Query(default=25, ge=1, le=250)) -> dict[str, object]:
     """Return recent trade ledger rows."""
-    trades = load_dashboard_state(load_config())["recent_trades"]
+    trades = load_dashboard_state(load_config(), include_candles=False)["recent_trades"]
     return {"trades": trades[-limit:]}
 
 
@@ -564,9 +677,20 @@ def api_backtest(
     interval: str = Query(default="30m"),
     start: str | None = None,
     end: str | None = None,
+    execution_cost_preset: str = Query(default="simple"),
+    fee_pct: float = Query(default=0.001, ge=0.0, le=0.1),
+    spread_pct: float = Query(default=0.0005, ge=0.0, le=0.1),
+    slippage_pct: float = Query(default=0.0005, ge=0.0, le=0.1),
 ) -> dict[str, object]:
     """Run a historical backtest over parquet candles and return summary output."""
-    config = load_config()
+    base_config = load_config()
+    config = _configured_backtest_config(
+        base_config=base_config,
+        execution_cost_preset=execution_cost_preset,
+        fee_pct=fee_pct,
+        spread_pct=spread_pct,
+        slippage_pct=slippage_pct,
+    )
     engine = BacktestEngine(config)
     end_at = _parse_optional_iso_datetime(end)
     start_at = _parse_optional_iso_datetime(start)
@@ -581,16 +705,49 @@ def api_backtest(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    payload = save_backtest_result(config.data.data_lake_path, result)
     return {
-        "symbol": result.symbol,
-        "interval": result.interval,
-        "start_at": result.start_at,
-        "end_at": result.end_at,
-        "candles_processed": result.candles_processed,
-        "metrics": asdict(result.metrics),
-        "final_snapshot": asdict(result.final_snapshot),
-        "trade_count": len(result.trades),
-        "equity_curve_points": len(result.equity_curve),
+        "symbol": payload["symbol"],
+        "interval": payload["interval"],
+        "start_at": payload["start_at"],
+        "end_at": payload["end_at"],
+        "candles_processed": payload["candles_processed"],
+        "metrics": payload["metrics"],
+        "final_snapshot": payload["final_snapshot"],
+        "execution_costs": {
+            "preset": config.execution.execution_cost_preset,
+            "fee_pct": config.execution.fee_pct,
+            "spread_pct": config.execution.spread_pct,
+            "slippage_pct": config.execution.slippage_pct,
+            "total_fees_usd": float((payload["final_snapshot"] or {}).get("total_fees_usd", 0.0)),
+            "total_spread_cost_usd": float((payload["final_snapshot"] or {}).get("total_spread_cost_usd", 0.0)),
+            "total_slippage_cost_usd": float((payload["final_snapshot"] or {}).get("total_slippage_cost_usd", 0.0)),
+            "total_execution_cost_usd": (
+                float((payload["final_snapshot"] or {}).get("total_fees_usd", 0.0))
+                + float((payload["final_snapshot"] or {}).get("total_spread_cost_usd", 0.0))
+                + float((payload["final_snapshot"] or {}).get("total_slippage_cost_usd", 0.0))
+            ),
+        },
+        "equity_curve": payload["equity_curve"],
+        "benchmark_curve": payload["benchmark_curve"],
+        "drawdowns": payload["drawdowns"],
+        "halted_reason": payload["halted_reason"],
+        "halted_at": payload["halted_at"],
+        "trades": payload["trades"],
+        "signals": [
+            {
+                "timestamp": step["timestamp"],
+                "regime": step["regime"],
+                "strategy_name": step["strategy_name"],
+                "signal_count": step["signal_count"],
+                "execution_count": step["execution_count"],
+                "decision": step["decision"],
+                "equity_usd": step["equity_usd"],
+                "drawdown_percent": step["drawdown_percent"],
+                "trace": step["trace"],
+            }
+            for step in payload["steps"]
+        ],
     }
 
 
@@ -1158,14 +1315,47 @@ def bitcoin_page() -> str:
 
 
 @app.get("/trades", response_class=HTMLResponse)
-def trades_page(run_backtest: int = Query(default=0, ge=0, le=1)) -> str:
+def trades_page(
+    run_backtest: int = Query(default=0, ge=0, le=1),
+    mode: str = Query(default="paper"),
+    interval: str = Query(default="30m"),
+    start: str | None = None,
+    end: str | None = None,
+    execution_cost_preset: str = Query(default="simple"),
+    fee_pct: float = Query(default=0.001, ge=0.0, le=0.1),
+    spread_pct: float = Query(default=0.0005, ge=0.0, le=0.1),
+    slippage_pct: float = Query(default=0.0005, ge=0.0, le=0.1),
+    backtest_recorded_at: str | None = None,
+    backtest_run_idx: int | None = Query(default=None, ge=0),
+) -> str:
     """Render the trades and portfolio dashboard."""
+    view_mode = "backtest" if run_backtest else mode.lower()
+    if view_mode not in {"paper", "backtest", "simulation"}:
+        view_mode = "paper"
     config = load_config()
-    state = load_dashboard_state(config)
+    include_trade_chart = view_mode == "paper"
+    state = load_dashboard_state(
+        config,
+        include_candles=include_trade_chart,
+        candle_intervals=["1m"] if include_trade_chart else None,
+        candle_limit=90 if include_trade_chart else None,
+    )
     latest_cycle = state["latest_cycle"] or {}
     latest_trace = state["latest_trace"] or {}
     snapshot = (state["portfolio_snapshot"] or {}).get("snapshot", {})
     portfolio = _portfolio_metrics(snapshot, config.execution.initial_cash_usd)
+    daily_pnl = 0.0
+    if state["recent_cycles"]:
+        latest_equity = float(snapshot.get("equity_usd", 0.0))
+        latest_dt = datetime.fromisoformat(str((state["recent_cycles"][-1] or {}).get("recorded_at", datetime.now(UTC).isoformat())))
+        cutoff = latest_dt - timedelta(days=1)
+        day_ago_cycles = [
+            cycle for cycle in state["recent_cycles"]
+            if cycle.get("recorded_at") and datetime.fromisoformat(str(cycle["recorded_at"])) >= cutoff
+        ]
+        if day_ago_cycles:
+            first_equity = float((day_ago_cycles[0].get("portfolio_snapshot") or {}).get("equity_usd", latest_equity))
+            daily_pnl = latest_equity - first_equity
     decision = _decision_breakdown(latest_cycle, latest_trace)
     trades = list(reversed(state["recent_trades"]))
     decisions = list(reversed(state["recent_cycles"]))
@@ -1182,7 +1372,7 @@ def trades_page(run_backtest: int = Query(default=0, ge=0, le=1)) -> str:
     recent_table = (
         "".join(_format_trade_row(trade, first_dca_buy_timestamp=first_dca_buy_timestamp) for trade in trades)
         if trades
-        else "<tr><td class='empty' colspan='8'>No trades recorded yet.</td></tr>"
+        else "<tr><td class='empty' colspan='9'>No trades recorded yet.</td></tr>"
     )
     decision_rows: list[str] = []
     for index, cycle in enumerate(decisions):
@@ -1206,57 +1396,55 @@ def trades_page(run_backtest: int = Query(default=0, ge=0, le=1)) -> str:
     )
     latest_trade = state["latest_trade"]
     pnl_class = "value-positive" if portfolio["total_pnl"] >= 0 else "value-negative"
+    daily_pnl_class = "value-positive" if daily_pnl >= 0 else "value-negative"
+    paper_chart_payload = json.dumps(state["chart_candles"].get("1m", [])[-90:] if include_trade_chart else [])
+    paper_trades_payload = json.dumps(state["recent_trades"]) if include_trade_chart else "[]"
+    signal_confidence_score, signal_confidence_label = _confidence_snapshot(
+        latest_cycle.get("indicator_snapshot", {}),
+        str(latest_cycle.get("regime", "")),
+    )
     backtest_summary = ""
-    if run_backtest:
-        try:
-            interval = "30m"
-            backtest = BacktestEngine(config).run(
-                symbol=config.trading.symbol,
-                interval=interval,
-                start_at=_default_backtest_start(interval=interval, end_at=datetime.now(UTC)),
-            )
-            metrics = backtest.metrics
-            backtest_summary = f"""
-            <section class="panel">
-              <div class="label">Backtest Summary</div>
-              <div class="value">Historical Replay ({escape(backtest.interval)})</div>
-              <div class="subgrid" style="margin-top:.8rem;">
-                <div class="metric light"><div class="metric-label">Total Return</div><div class="metric-value">{metrics.total_return_percent:+.2f}%</div></div>
-                <div class="metric light"><div class="metric-label">Buy & Hold</div><div class="metric-value">{metrics.buy_and_hold_return_percent:+.2f}%</div></div>
-                <div class="metric light"><div class="metric-label">Max Drawdown</div><div class="metric-value">{metrics.max_drawdown_percent:.2f}%</div></div>
-                <div class="metric light"><div class="metric-label">Sharpe</div><div class="metric-value">{metrics.sharpe_ratio:.2f}</div></div>
-                <div class="metric light"><div class="metric-label">Trades</div><div class="metric-value">{metrics.filled_trade_count}</div></div>
-                <div class="metric light"><div class="metric-label">Swing Win Rate</div><div class="metric-value">{metrics.win_rate_percent:.2f}%</div></div>
-              </div>
-              <p style="margin-top:.8rem;">Window: {escape(_format_display_timestamp(backtest.start_at))} to {escape(_format_display_timestamp(backtest.end_at))}</p>
-            </section>
-            """
-        except ValueError as exc:
-            backtest_summary = f"""
-            <section class="panel">
-              <div class="label">Backtest Summary</div>
-              <div class="value">Unavailable</div>
-              <p>{escape(str(exc))}</p>
-            </section>
-            """
+    backtest_portfolio_side = ""
+    selected_backtest: dict[str, object] | None = None
+    selected_fee_pct = fee_pct if fee_pct is not None else config.execution.fee_pct
+    selected_spread_pct = spread_pct if spread_pct is not None else config.execution.spread_pct
+    selected_slippage_pct = slippage_pct if slippage_pct is not None else config.execution.slippage_pct
+    default_backtest_end = datetime.now(UTC).replace(microsecond=0, second=0)
+    default_backtest_start = _default_backtest_start(interval=interval, end_at=default_backtest_end)
+    backtest_start_value = start or (default_backtest_start.isoformat() if default_backtest_start else "")
+    backtest_end_value = end or default_backtest_end.isoformat()
+    available_backtests = list(reversed(state.get("recent_backtests", [])))
+    if backtest_run_idx is not None and backtest_run_idx < len(available_backtests):
+        selected_backtest = available_backtests[backtest_run_idx]
+    elif backtest_recorded_at:
+        selected_backtest = next(
+            (run for run in available_backtests if str(run.get("recorded_at", "")) == backtest_recorded_at),
+            None,
+        )
+    if selected_backtest is None:
+        selected_backtest = state.get("latest_backtest") or (available_backtests[0] if available_backtests else None)
+    selected_backtest_idx = (
+        available_backtests.index(selected_backtest)
+        if selected_backtest in available_backtests
+        else 0
+    )
 
-    mode_cards = f"""
-      <div class="mode live">
-        <div class="label">Paper Trading</div>
-        <div class="value">Active</div>
-        <div>Uses the persisted paper broker, trade ledger, and local parquet market data.</div>
-      </div>
-      <div class="mode">
-        <div class="label">Backtesting</div>
-        <div class="value">Available</div>
-        <a class="ghost" href="/trades?run_backtest=1" style="text-decoration:none;">Run Backtest</a>
-      </div>
-      <div class="mode">
-        <div class="label">Simulation</div>
-        <div class="value">Coming Soon</div>
-        <button class="ghost" disabled>Run Simulation</button>
-      </div>
-    """
+    backtest_history_nav = (
+        "".join(
+            f"""
+            <a class="history-link {'active' if index == selected_backtest_idx else ''}"
+               href="/trades?mode=backtest&backtest_run_idx={index}"
+               style="text-decoration:none;">
+              <div class="history-link-meta">{escape(_format_display_timestamp(str(run.get('recorded_at', ''))))}</div>
+              <div class="history-link-main">{escape(str(run.get('interval', 'n/a')))}</div>
+              <div class="history-link-sub">{float((run.get('metrics') or {}).get('total_return_percent', 0.0)):+.2f}% return</div>
+            </a>
+            """
+            for index, run in enumerate(available_backtests)
+        )
+        if available_backtests
+        else "<div class='empty'>No saved backtest runs yet.</div>"
+    )
     latest_trade_summary = "No trades recorded yet."
     latest_trade_timestamp = ""
     if latest_trade:
@@ -1267,33 +1455,47 @@ def trades_page(run_backtest: int = Query(default=0, ge=0, le=1)) -> str:
             f"${float(latest_trade.get('size_usd', 0)):.2f} @ ${float(latest_trade.get('price', 0)):.2f}"
         )
 
-    body = f"""
-    <section class="banner">
-      <div class="panel"><div class="label">Portfolio Equity</div><div class="value">${portfolio["equity"]:.2f}</div></div>
-      <div class="panel"><div class="label">Total PnL</div><div class="value {pnl_class}">${portfolio["total_pnl"]:+.2f}</div></div>
-      <div class="panel"><div class="label">BTC Allocation</div><div class="value">{portfolio["exposure_percent"]:.2f}%</div></div>
-      <div class="panel"><div class="label">Active Strategy</div><div class="value">{escape(str(latest_cycle.get('strategy_name', 'n/a')).replace('Strategy', ''))}</div></div>
-      <div class="panel"><div class="label">Latest Trade</div><div class="value">{escape(latest_trade_summary)}</div><div class="label" style="margin-top:.35rem;">{escape(latest_trade_timestamp)}</div></div>
-    </section>
-    <section class="page-grid">
-      <div class="stack">
-        <section class="panel">
-          <div class="label">Portfolio State</div>
-          <div class="value">Current Holdings</div>
-          <div class="subgrid">
-            <div class="metric light"><div class="metric-label">Cash</div><div class="metric-value">${portfolio["cash"]:.2f} USD</div></div>
-            <div class="metric light"><div class="metric-label">BTC Held</div><div class="metric-value">{portfolio["btc_units"]:.6f} BTC</div></div>
-            <div class="metric light"><div class="metric-label">DCA BTC</div><div class="metric-value">{portfolio["dca_btc_units"]:.6f} BTC</div></div>
-            <div class="metric light"><div class="metric-label">Swing BTC</div><div class="metric-value">{portfolio["swing_btc_units"]:.6f} BTC</div></div>
-            <div class="metric light"><div class="metric-label">Avg Entry</div><div class="metric-value">${portfolio["avg_entry"]:.2f}</div></div>
-            <div class="metric light"><div class="metric-label">Last Mark</div><div class="metric-value">${portfolio["last_mark"]:.2f}</div></div>
-            <div class="metric light"><div class="metric-label">Unrealized PnL</div><div class="metric-value">${portfolio["unrealized_pnl"]:+.2f} USD</div></div>
-            <div class="metric light"><div class="metric-label">Realized PnL</div><div class="metric-value">${portfolio["realized_pnl"]:+.2f} USD</div></div>
-            <div class="metric light"><div class="metric-label">Fees Paid</div><div class="metric-value">${portfolio["total_fees_usd"]:.2f} USD</div></div>
+    paper_sections = f"""
+        <section class="trade-section">
+          <div class="trade-section-head">
+            <div>
+              <div class="label">Live Trade Context</div>
+              <div class="trade-section-title">Paper Trading Overview</div>
+              <div class="trade-section-note">Live paper-trading context uses recent 1m candles, persisted ledger activity, and the latest scheduled decision snapshot.</div>
+            </div>
+          </div>
+          <div class="trade-split">
+            <div class="trade-card-soft trade-chart-card">
+              <div class="label">Paper Trading Chart</div>
+              <div class="value">Last 90 Minutes</div>
+              <div class="chart-note">Recent 1m BTC-USD candles with executed paper-trade markers. ATR bands are shown when the latest trade has a tracked swing stop.</div>
+              <div class="trade-chart-frame" style="margin-top:.8rem;">
+                <div id="tradePaperChart" class="chart-surface" style="height:360px;"></div>
+              </div>
+            </div>
+            <div class="trade-card-soft">
+              <div class="label">Signal Panel</div>
+              <div class="value">Latest Trading Snapshot</div>
+              <div class="subgrid" style="grid-template-columns:repeat(2,1fr);">
+                <div class="metric light"><div class="metric-label">Regime</div><div class="metric-value">{escape(str(latest_cycle.get('regime', 'n/a')).upper())}</div></div>
+                <div class="metric light"><div class="metric-label">Signal</div><div class="metric-value">{escape(str(decision.get('decision', 'n/a')).upper())}</div></div>
+                <div class="metric light"><div class="metric-label">Confidence</div><div class="metric-value">{signal_confidence_score:.2f} ({escape(signal_confidence_label)})</div></div>
+                <div class="metric light"><div class="metric-label">Strategy</div><div class="metric-value">{escape(str(latest_cycle.get('strategy_name', 'n/a')).replace('Strategy', ''))}</div></div>
+                <div class="metric light"><div class="metric-label">RSI</div><div class="metric-value">{float((latest_cycle.get('indicator_snapshot') or {{}}).get('rsi', 0.0)):.2f}</div></div>
+                <div class="metric light"><div class="metric-label">ATR</div><div class="metric-value">{float((latest_cycle.get('indicator_snapshot') or {{}}).get('atr', 0.0)):.2f}</div></div>
+                <div class="metric light"><div class="metric-label">Trend</div><div class="metric-value">{escape(str(latest_cycle.get('regime', 'n/a')).upper())}</div></div>
+              </div>
+            </div>
           </div>
         </section>
-        <section class="panel">
-          <div class="label">Executed Buys and Sells</div>
+        <section class="trade-section">
+          <div class="trade-section-head">
+            <div>
+              <div class="label">Executed Buys and Sells</div>
+              <div class="trade-section-title">Ledger Activity</div>
+            </div>
+          </div>
+          <div class="trade-table-wrap">
           <table>
             <thead>
               <tr>
@@ -1303,28 +1505,40 @@ def trades_page(run_backtest: int = Query(default=0, ge=0, le=1)) -> str:
                 <th>USD</th>
                 <th>Price</th>
                 <th>BTC</th>
+                <th>Costs</th>
                 <th>Strategy</th>
                 <th>Signal Type</th>
               </tr>
             </thead>
             <tbody>{recent_table}</tbody>
           </table>
+          </div>
         </section>
-        <section class="panel decision-card">
-          <div class="label">Decision Breakdown</div>
-          <div class="value" id="decision-headline">{escape(str(decision["headline"]))}</div>
+        <section class="trade-section decision-card">
+          <div class="trade-section-head">
+            <div>
+              <div class="label">Decision Breakdown</div>
+              <div class="trade-section-title" id="decision-headline">{escape(str(decision["headline"]))}</div>
+            </div>
+          </div>
           <p class="label" id="decision-timestamp" style="margin-top:.45rem;">{escape(_format_display_timestamp(str(decision.get("timestamp", ""))))}</p>
           <ul class="decision-list" id="decision-reasons">
             {''.join(f"<li>{escape(str(line))}</li>" for line in decision["reason_lines"])}
           </ul>
           <p id="decision-interpretation"><strong>Interpretation:</strong> {escape(str(decision["interpretation"]))}</p>
         </section>
-        <section class="panel">
-          <div class="label">Decision Log</div>
+        <section class="trade-section">
+          <div class="trade-section-head">
+            <div>
+              <div class="label">Decision Log</div>
+              <div class="trade-section-title">Recent Scheduled Decisions</div>
+            </div>
+          </div>
           <div class="segmented" style="margin-top:.8rem;">
             <button class="seg-btn active" id="decision-filter-buy" type="button">Buy</button>
             <button class="seg-btn" id="decision-filter-all" type="button">All</button>
           </div>
+          <div class="trade-table-wrap">
           <table>
             <thead>
               <tr>
@@ -1339,13 +1553,325 @@ def trades_page(run_backtest: int = Query(default=0, ge=0, le=1)) -> str:
             </thead>
             <tbody id="decision-log-body">{decision_table}</tbody>
           </table>
+          </div>
           {"<button class='ghost' id='decision-log-expand' style='margin-top:.9rem;'>Show 10 more</button>" if hidden_decision_count else ""}
         </section>
-        {backtest_summary}
+    """
+    backtest_controls = f"""
+        <section class="trade-section">
+          <div class="trade-section-head">
+            <div>
+              <div class="label">Backtest Controls</div>
+              <div class="trade-section-title">Historical Replay Setup</div>
+              <div class="trade-section-note">Configure the replay window and cost assumptions, then run the selected scenario explicitly.</div>
+            </div>
+          </div>
+          <form method="get" action="/trades" style="margin-top:.9rem; display:grid; gap:.8rem;">
+            <input type="hidden" name="mode" value="backtest" />
+            <input type="hidden" name="run_backtest" value="1" />
+            <div class="filter-grid" style="display:grid; grid-template-columns:180px 1fr 1fr auto;">
+              <div class="field">
+                <label for="backtestInterval">Interval</label>
+                <select id="backtestInterval" name="interval">
+                  <option value="1m" {'selected' if interval == '1m' else ''}>1m</option>
+                  <option value="10m" {'selected' if interval == '10m' else ''}>10m</option>
+                  <option value="30m" {'selected' if interval == '30m' else ''}>30m</option>
+                  <option value="1hr" {'selected' if interval == '1hr' else ''}>1hr</option>
+                  <option value="1d" {'selected' if interval == '1d' else ''}>1d</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="backtestStart">Start</label>
+                <input id="backtestStart" type="datetime-local" name="start" value="{escape(backtest_start_value.replace('Z', '+00:00')[:16] if backtest_start_value else '')}" />
+              </div>
+              <div class="field">
+                <label for="backtestEnd">End</label>
+                <input id="backtestEnd" type="datetime-local" name="end" value="{escape(backtest_end_value.replace('Z', '+00:00')[:16] if backtest_end_value else '')}" />
+              </div>
+              <input type="hidden" name="execution_cost_preset" value="custom" />
+            </div>
+            <div class="filter-grid" style="display:grid; grid-template-columns:1fr 1fr 1fr auto;">
+              <div class="field">
+                <label for="backtestFeePct">Fee %</label>
+                <input id="backtestFeePct" type="number" name="fee_pct" min="0" max="0.1" step="0.0001" value="{selected_fee_pct:.4f}" />
+              </div>
+              <div class="field">
+                <label for="backtestSpreadPct">Spread %</label>
+                <input id="backtestSpreadPct" type="number" name="spread_pct" min="0" max="0.1" step="0.0001" value="{selected_spread_pct:.4f}" />
+              </div>
+              <div class="field">
+                <label for="backtestSlippagePct">Slippage %</label>
+                <input id="backtestSlippagePct" type="number" name="slippage_pct" min="0" max="0.1" step="0.0001" value="{selected_slippage_pct:.4f}" />
+              </div>
+              <div class="filter-actions" style="align-items:end;">
+                <button class="ghost" type="submit">Run Backtest</button>
+              </div>
+            </div>
+          </form>
+        </section>
+    """
+    backtest_empty = """
+        <section class="trade-section simulation-card">
+          <div class="label">Backtest Summary</div>
+          <div class="value">Not Run Yet</div>
+          <p>Choose an interval and optional date window, then run the backtest from this view.</p>
+        </section>
+    """
+    backtest_payload = ""
+    backtest_history_rows = (
+        "".join(
+            "<tr>"
+            f"<td>{escape(_format_display_timestamp(str(run.get('recorded_at', ''))))}</td>"
+            f"<td>{escape(str(run.get('interval', 'n/a')))}</td>"
+            f"<td>{float((run.get('metrics') or {}).get('total_return_percent', 0.0)):+.2f}%</td>"
+            f"<td>{float((run.get('metrics') or {}).get('max_drawdown_percent', 0.0)):.2f}%</td>"
+            f"<td>{int((run.get('metrics') or {}).get('filled_trade_count', 0))}</td>"
+            "</tr>"
+            for run in reversed(state.get("recent_backtests", []))
+        )
+        if state.get("recent_backtests")
+        else "<tr><td class='empty' colspan='5'>No saved backtest runs yet.</td></tr>"
+    )
+    if view_mode == "backtest" and run_backtest:
+        try:
+            end_at = _parse_optional_iso_datetime(end)
+            start_at = _parse_optional_iso_datetime(start)
+            if start_at is None:
+                start_at = _default_backtest_start(interval=interval, end_at=end_at or datetime.now(UTC))
+            backtest_config = _configured_backtest_config(
+                base_config=config,
+                execution_cost_preset="custom",
+                fee_pct=selected_fee_pct,
+                spread_pct=selected_spread_pct,
+                slippage_pct=selected_slippage_pct,
+            )
+            backtest_result = BacktestEngine(backtest_config).run(
+                symbol=config.trading.symbol,
+                interval=interval,
+                start_at=start_at,
+                end_at=end_at,
+            )
+            saved_backtest = save_backtest_result(config.data.data_lake_path, backtest_result)
+            selected_backtest = saved_backtest
+            backtest_payload = json.dumps(
+                {
+                    "equity_curve": saved_backtest["equity_curve"],
+                    "benchmark_curve": saved_backtest["benchmark_curve"],
+                    "drawdowns": saved_backtest["drawdowns"],
+                }
+            )
+            metrics = backtest_result.metrics
+            latest_step = saved_backtest["steps"][-1] if saved_backtest["steps"] else None
+            final_snapshot = saved_backtest["final_snapshot"] or {}
+            total_fees = float(final_snapshot.get("total_fees_usd", 0.0))
+            total_spread = float(final_snapshot.get("total_spread_cost_usd", 0.0))
+            total_slippage = float(final_snapshot.get("total_slippage_cost_usd", 0.0))
+            total_execution_cost = total_fees + total_spread + total_slippage
+        except ValueError as exc:
+            backtest_summary = f"""
+            <section class="trade-section">
+              <div class="label">Backtest Summary</div>
+              <div class="value">Unavailable</div>
+              <p>{escape(str(exc))}</p>
+            </section>
+            """
+    if view_mode == "backtest" and not backtest_summary and selected_backtest:
+        backtest_payload = json.dumps(
+            {
+                "equity_curve": selected_backtest.get("equity_curve", []),
+                "benchmark_curve": selected_backtest.get("benchmark_curve", []),
+                "drawdowns": selected_backtest.get("drawdowns", []),
+            }
+        )
+        metrics = selected_backtest.get("metrics", {}) or {}
+        final_snapshot = selected_backtest.get("final_snapshot", {}) or {}
+        total_fees = float(final_snapshot.get("total_fees_usd", 0.0))
+        total_spread = float(final_snapshot.get("total_spread_cost_usd", 0.0))
+        total_slippage = float(final_snapshot.get("total_slippage_cost_usd", 0.0))
+        total_execution_cost = total_fees + total_spread + total_slippage
+        halted_reason = str(selected_backtest.get("halted_reason") or "")
+        halted_at = str(selected_backtest.get("halted_at") or "")
+        halt_label = (
+            "Stopped by Stop-Loss" if halted_reason == "stop_loss_triggered"
+            else "Stopped by Drawdown Guard" if halted_reason == "max_drawdown_reached"
+            else "Completed Window"
+        )
+        selected_step = ((selected_backtest.get("steps") or [])[-1:][0]) if selected_backtest.get("steps") else None
+        selected_step_breakdown = _backtest_step_breakdown(selected_step or {})
+        backtest_decisions = list(reversed(selected_backtest.get("steps") or []))
+        backtest_decision_rows = "".join(
+            _format_backtest_decision_row(step, hidden=index >= 10)
+            for index, step in enumerate(backtest_decisions)
+        ) or "<tr><td class='empty' colspan='7'>No replay decisions recorded yet.</td></tr>"
+        hidden_backtest_decision_count = max(len(backtest_decisions) - 10, 0)
+        backtest_portfolio_side = f"""
+        <section class="trade-section" style="display:{'block' if view_mode == 'backtest' else 'none'};">
+          <div class="label">Portfolio Snapshot</div>
+          <div class="value">Replay End State</div>
+          <div class="market-mini">
+            <div class="mini-row"><div class="mini-label">Final Portfolio Value</div><div class="mini-value">${float(final_snapshot.get('equity_usd', 0.0)):.2f}</div></div>
+            <div class="mini-row"><div class="mini-label">Ending Cash</div><div class="mini-value">${float(final_snapshot.get('cash_usd', 0.0)):.2f}</div></div>
+            <div class="mini-row"><div class="mini-label">Ending BTC</div><div class="mini-value">{float(final_snapshot.get('btc_units', 0.0)):.6f} BTC</div></div>
+            <div class="mini-row"><div class="mini-label">Avg Entry</div><div class="mini-value">${float(final_snapshot.get('avg_entry_price', 0.0)):.2f}</div></div>
+            <div class="mini-row"><div class="mini-label">Last Mark</div><div class="mini-value">${float(final_snapshot.get('last_mark_price', 0.0)):.2f}</div></div>
+            <div class="mini-row"><div class="mini-label">Realized PnL</div><div class="mini-value">${float(final_snapshot.get('realized_pnl_usd', 0.0)):+.2f}</div></div>
+            <div class="mini-row"><div class="mini-label">Final Cost</div><div class="mini-value">${total_execution_cost:.2f}</div></div>
+            <div class="mini-row"><div class="mini-label">Run Status</div><div class="mini-value">{escape(halt_label)}</div></div>
+          </div>
+        </section>
+        """
+        backtest_summary = f"""
+            <section class="trade-section">
+              <div class="trade-section-head">
+                <div>
+                  <div class="label">Backtest Results</div>
+                  <div class="trade-section-title">Historical Replay ({escape(str(selected_backtest.get('interval', 'n/a')))})</div>
+                </div>
+              </div>
+              <div class="subgrid" style="margin-top:.8rem;">
+                <div class="metric light"><div class="metric-label">Total Return</div><div class="metric-value">{float(metrics.get('total_return_percent', 0.0)):+.2f}%</div></div>
+                <div class="metric light"><div class="metric-label">Buy & Hold</div><div class="metric-value">{float(metrics.get('buy_and_hold_return_percent', 0.0)):+.2f}%</div></div>
+                <div class="metric light"><div class="metric-label">Max Drawdown</div><div class="metric-value">{float(metrics.get('max_drawdown_percent', 0.0)):.2f}%</div></div>
+                <div class="metric light"><div class="metric-label">Sharpe</div><div class="metric-value">{float(metrics.get('sharpe_ratio', 0.0)):.2f}</div></div>
+                <div class="metric light"><div class="metric-label">Win Rate</div><div class="metric-value">{float(metrics.get('win_rate_percent', 0.0)):.2f}%</div></div>
+                <div class="metric light"><div class="metric-label">Total Trades</div><div class="metric-value">{int(metrics.get('filled_trade_count', 0))}</div></div>
+                <div class="metric light"><div class="metric-label">Avg Win</div><div class="metric-value">${float(metrics.get('avg_win_usd', 0.0)):.2f}</div></div>
+                <div class="metric light"><div class="metric-label">Avg Loss</div><div class="metric-value">${float(metrics.get('avg_loss_usd', 0.0)):.2f}</div></div>
+                <div class="metric light"><div class="metric-label">Profit Factor</div><div class="metric-value">{float(metrics.get('profit_factor', 0.0)):.2f}</div></div>
+                <div class="metric light"><div class="metric-label">Fees Paid</div><div class="metric-value">${total_fees:.2f}</div></div>
+                <div class="metric light"><div class="metric-label">Spread Cost</div><div class="metric-value">${total_spread:.2f}</div></div>
+                <div class="metric light"><div class="metric-label">Slippage Cost</div><div class="metric-value">${total_slippage:.2f}</div></div>
+              </div>
+              <p style="margin-top:.8rem;">Window: {escape(_format_display_timestamp(str(selected_backtest.get('start_at', ''))))} to {escape(_format_display_timestamp(str(selected_backtest.get('end_at', ''))))}</p>
+              <p>Saved Run: {escape(_format_display_timestamp(str(selected_backtest.get('recorded_at', ''))))}</p>
+              <p>{'Stopped at: ' + escape(_format_display_timestamp(halted_at)) if halted_at else 'Replay covered the full selected window.'}</p>
+            </section>
+            <section class="trade-section decision-card">
+              <div class="trade-section-head">
+                <div>
+                  <div class="label">Decision Breakdown</div>
+                  <div class="trade-section-title" id="backtest-decision-headline">{escape(str(selected_step_breakdown['headline']))}</div>
+                </div>
+              </div>
+              <p class="label" id="backtest-decision-timestamp" style="margin-top:.45rem;">{escape(str(selected_step_breakdown.get('timestamp', '')))}</p>
+              <ul class="decision-list" id="backtest-decision-reasons">
+                {''.join(f"<li>{escape(str(line))}</li>" for line in selected_step_breakdown["reason_lines"])}
+              </ul>
+              <p id="backtest-decision-interpretation"><strong>Interpretation:</strong> {escape(str(selected_step_breakdown["interpretation"]))}</p>
+            </section>
+            <section class="trade-section">
+              <div class="trade-section-head">
+                <div>
+                  <div class="label">Decision Log</div>
+                  <div class="trade-section-title">Replay Decision Timeline</div>
+                </div>
+              </div>
+              <div class="trade-table-wrap">
+              <table>
+                <thead>
+                  <tr><th>Timestamp</th><th>Regime</th><th>Strategy</th><th>Decision</th><th>Signals</th><th>Executions</th><th>Equity</th></tr>
+                </thead>
+                <tbody id="backtest-decision-log-body">{backtest_decision_rows}</tbody>
+              </table>
+              </div>
+              {"<button class='ghost' id='backtest-decision-expand' style='margin-top:.9rem;'>Show 10 more</button>" if hidden_backtest_decision_count else ""}
+            </section>
+            <section class="trade-section chart-card">
+              <div class="label">Equity Curve</div>
+              <div class="value">Strategy vs Buy & Hold</div>
+              <div class="trade-chart-frame" style="margin-top:.8rem;">
+                <div id="backtestEquityChart" class="chart-surface" style="height:320px;"></div>
+              </div>
+            </section>
+            <section class="trade-section chart-card">
+              <div class="label">Drawdowns</div>
+              <div class="value">Peak-to-Trough Decline</div>
+              <div class="trade-chart-frame" style="margin-top:.8rem;">
+                <div id="backtestDrawdownChart" class="chart-surface" style="height:280px;"></div>
+              </div>
+            </section>
+        """
+    else:
+        backtest_portfolio_side = ""
+    if not backtest_summary:
+        backtest_empty = (
+            backtest_empty
+        )
+    backtest_sections = backtest_controls + (backtest_summary or backtest_empty)
+    simulation_sections = """
+        <section class="trade-section simulation-card">
+          <div class="label">Simulation</div>
+          <div class="value">Coming Soon</div>
+          <p>This subview is reserved for scenario-driven simulations. It is not implemented yet.</p>
+          <div class="trade-note-strip">
+            <span class="trade-note-pill">Scenario templates</span>
+            <span class="trade-note-pill">What-if capital changes</span>
+            <span class="trade-note-pill">Stress testing</span>
+          </div>
+        </section>
+    """
+    main_sections = paper_sections if view_mode == "paper" else backtest_sections if view_mode == "backtest" else simulation_sections
+    system_mode_value = "Paper Trading" if view_mode == "paper" else "Backtesting" if view_mode == "backtest" else "Simulation"
+    system_mode_text = (
+        "The trade engine now separates base DCA holdings from opportunistic swing positions so ATR stop-loss exits can close swing trades without touching base accumulation."
+        if view_mode == "paper"
+        else "The backtest engine replays historical parquet candles through the same indicator, routing, and paper-execution path used by the live paper-trading runtime."
+        if view_mode == "backtest"
+        else "Simulation mode will host scenario-based experiments without affecting live paper-trading state."
+    )
+
+    body = f"""
+    <section class="trade-page">
+      <section class="trade-hero panel">
+        <div class="trade-hero-top">
+          <div>
+            <div class="label">Trades Workspace</div>
+            <div class="trade-hero-title">{'Paper Trading' if view_mode == 'paper' else 'Backtesting' if view_mode == 'backtest' else 'Simulation'}</div>
+            <div class="trade-hero-sub">
+              {'Live paper-trading state, execution history, and decision review in one cockpit.' if view_mode == 'paper' else 'Historical replay, saved run comparison, and decision-centric backtest review.' if view_mode == 'backtest' else 'Scenario analysis will live here once simulation workflows are implemented.'}
+            </div>
+          </div>
+          <div class="trade-mode-pills">
+            <a class="trade-mode-pill {'active' if view_mode == 'paper' else ''}" href="/trades?mode=paper">Paper</a>
+            <a class="trade-mode-pill {'active' if view_mode == 'backtest' else ''}" href="/trades?mode=backtest">Backtest</a>
+            <a class="trade-mode-pill {'active' if view_mode == 'simulation' else ''}" href="/trades?mode=simulation">Simulation</a>
+          </div>
+        </div>
+        <div class="trade-banner">
+          <div class="trade-banner-card"><div class="metric-label">Portfolio Equity</div><div class="metric-value">${portfolio["equity"]:.2f}</div></div>
+          <div class="trade-banner-card"><div class="metric-label">Total PnL</div><div class="metric-value {pnl_class}">${portfolio["total_pnl"]:+.2f}</div></div>
+          <div class="trade-banner-card"><div class="metric-label">Daily PnL</div><div class="metric-value {daily_pnl_class}">${daily_pnl:+.2f}</div></div>
+          <div class="trade-banner-card"><div class="metric-label">BTC Allocation</div><div class="metric-value">{portfolio["exposure_percent"]:.2f}%</div></div>
+          <div class="trade-banner-card"><div class="metric-label">Active Strategy</div><div class="metric-value">{escape(str(latest_cycle.get('strategy_name', 'n/a')).replace('Strategy', ''))}</div></div>
+          <div class="trade-banner-card"><div class="metric-label">Latest Trade</div><div class="metric-value">{escape(latest_trade_summary)}</div><div class="metric-label" style="margin-top:.35rem;">{escape(latest_trade_timestamp)}</div></div>
+        </div>
+      </section>
+      <section class="trade-layout">
+      <div class="trade-main">
+        {main_sections}
       </div>
-      <aside class="stack">
-        <section class="panel"><div class="label">Execution Modes</div><div class="stack" style="margin-top:.8rem;">{mode_cards}</div></section>
-        <section class="panel">
+      <aside class="trade-side">
+        <section class="trade-section" style="display:{'block' if view_mode == 'paper' else 'none'};">
+          <div class="label">Portfolio State</div>
+          <div class="value">Current Holdings</div>
+          <div class="market-mini">
+            <div class="mini-row"><div class="mini-label">Cash</div><div class="mini-value">${portfolio["cash"]:.2f} USD</div></div>
+            <div class="mini-row"><div class="mini-label">BTC Held</div><div class="mini-value">{portfolio["btc_units"]:.6f} BTC</div></div>
+            <div class="mini-row"><div class="mini-label">DCA BTC</div><div class="mini-value">{portfolio["dca_btc_units"]:.6f} BTC</div></div>
+            <div class="mini-row"><div class="mini-label">Swing BTC</div><div class="mini-value">{portfolio["swing_btc_units"]:.6f} BTC</div></div>
+            <div class="mini-row"><div class="mini-label">Avg Entry</div><div class="mini-value">${portfolio["avg_entry"]:.2f}</div></div>
+            <div class="mini-row"><div class="mini-label">Last Mark</div><div class="mini-value">${portfolio["last_mark"]:.2f}</div></div>
+            <div class="mini-row"><div class="mini-label">Unrealized PnL</div><div class="mini-value">${portfolio["unrealized_pnl"]:+.2f} USD</div></div>
+            <div class="mini-row"><div class="mini-label">Realized PnL</div><div class="mini-value">${portfolio["realized_pnl"]:+.2f} USD</div></div>
+            <div class="mini-row"><div class="mini-label">Final Cost</div><div class="mini-value">${portfolio["total_execution_cost_usd"]:.2f} USD</div></div>
+          </div>
+        </section>
+        {backtest_portfolio_side}
+        <section class="trade-section" style="display:{'block' if view_mode == 'backtest' else 'none'};">
+          <div class="label">Backtest History</div>
+          <div class="history-stack">{backtest_history_nav}</div>
+        </section>
+        <section class="trade-section" style="display:{'block' if view_mode == 'paper' else 'none'};">
           <div class="label">Active Swing Positions</div>
           <table>
             <thead>
@@ -1354,16 +1880,21 @@ def trades_page(run_backtest: int = Query(default=0, ge=0, le=1)) -> str:
             <tbody>{swing_rows}</tbody>
           </table>
         </section>
-        <section class="panel">
+        <section class="trade-section">
           <div class="label">System Mode</div>
-          <div class="value">Paper Trading</div>
-          <p>The trade engine now separates base DCA holdings from opportunistic swing positions so ATR stop-loss exits can close swing trades without touching base accumulation.</p>
+          <div class="value">{system_mode_value}</div>
+          <p>{system_mode_text}</p>
         </section>
       </aside>
+      </section>
     </section>
     """
-    script = """
+    script = f"""
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
     <script>
+      const tradeChartPayload = {paper_chart_payload};
+      const tradeMarkersPayload = {paper_trades_payload};
+      const backtestChartsPayload = {backtest_payload or "{}"};
       const decisionHeadline = document.getElementById("decision-headline");
       const decisionTimestamp = document.getElementById("decision-timestamp");
       const decisionReasons = document.getElementById("decision-reasons");
@@ -1372,107 +1903,295 @@ def trades_page(run_backtest: int = Query(default=0, ge=0, le=1)) -> str:
       const expandButton = document.getElementById("decision-log-expand");
       const buyFilterButton = document.getElementById("decision-filter-buy");
       const allFilterButton = document.getElementById("decision-filter-all");
+      const backtestDecisionHeadline = document.getElementById("backtest-decision-headline");
+      const backtestDecisionTimestamp = document.getElementById("backtest-decision-timestamp");
+      const backtestDecisionReasons = document.getElementById("backtest-decision-reasons");
+      const backtestDecisionInterpretation = document.getElementById("backtest-decision-interpretation");
+      const backtestDecisionRows = Array.from(document.querySelectorAll(".backtest-decision-row"));
+      const backtestExpandButton = document.getElementById("backtest-decision-expand");
       let decisionFilter = "BUY";
       let visibleDecisionCount = 10;
+      let visibleBacktestDecisionCount = 10;
 
-      function setFilterButtons() {
-        if (buyFilterButton) {
+      function setFilterButtons() {{
+        if (buyFilterButton) {{
           buyFilterButton.classList.toggle("active", decisionFilter === "BUY");
-        }
-        if (allFilterButton) {
+        }}
+        if (allFilterButton) {{
           allFilterButton.classList.toggle("active", decisionFilter === "ALL");
-        }
-      }
+        }}
+      }}
 
-      function filteredDecisionRows() {
-        if (decisionFilter === "ALL") {
+      function filteredDecisionRows() {{
+        if (decisionFilter === "ALL") {{
           return decisionRows;
-        }
-        return decisionRows.filter((row) => {
+        }}
+        return decisionRows.filter((row) => {{
           const decisionCell = row.querySelector(".decision-cell");
           return (decisionCell?.textContent || "").trim().toUpperCase() === "BUY";
-        });
-      }
+        }});
+      }}
 
-      function refreshDecisionTable() {
+      function refreshDecisionTable() {{
         const matchingRows = filteredDecisionRows();
-        decisionRows.forEach((row) => {
+        decisionRows.forEach((row) => {{
           row.classList.add("decision-row-hidden");
-        });
-        matchingRows.slice(0, visibleDecisionCount).forEach((row) => {
+        }});
+        matchingRows.slice(0, visibleDecisionCount).forEach((row) => {{
           row.classList.remove("decision-row-hidden");
-        });
+        }});
 
-        if (expandButton) {
+        if (expandButton) {{
           const hiddenCount = Math.max(matchingRows.length - visibleDecisionCount, 0);
           expandButton.style.display = hiddenCount > 0 ? "inline-flex" : "none";
           expandButton.textContent = hiddenCount > 10 ? "Show 10 more" : "Show remaining";
-        }
+        }}
 
         const selectedVisible = decisionRows.find((row) => row.classList.contains("decision-row-active") && !row.classList.contains("decision-row-hidden"));
-        if (!selectedVisible) {
+        if (!selectedVisible) {{
           const firstVisible = matchingRows.find((row) => !row.classList.contains("decision-row-hidden"));
-          if (firstVisible) {
+          if (firstVisible) {{
             applyDecision(firstVisible);
-          }
-        }
-      }
+          }}
+        }}
+      }}
 
-      function applyDecision(row) {
+      function applyDecision(row) {{
         if (!row) return;
         const payload = row.dataset.breakdown;
         if (!payload) return;
         const breakdown = JSON.parse(payload);
         decisionHeadline.textContent = breakdown.headline || "Decision";
-        if (decisionTimestamp) {
+        if (decisionTimestamp) {{
           decisionTimestamp.textContent = breakdown.timestamp || "";
-        }
+        }}
         decisionReasons.innerHTML = "";
-        (breakdown.reason_lines || []).forEach((line) => {
+        (breakdown.reason_lines || []).forEach((line) => {{
           const item = document.createElement("li");
           item.textContent = line;
           decisionReasons.appendChild(item);
-        });
-        decisionInterpretation.innerHTML = `<strong>Interpretation:</strong> ${breakdown.interpretation || ""}`;
+        }});
+        decisionInterpretation.innerHTML = `<strong>Interpretation:</strong> ${{breakdown.interpretation || ""}}`;
         decisionRows.forEach((candidate) => candidate.classList.remove("decision-row-active"));
         row.classList.add("decision-row-active");
-      }
+      }}
 
-      decisionRows.forEach((row) => {
+      decisionRows.forEach((row) => {{
         row.addEventListener("click", () => applyDecision(row));
-      });
+      }});
 
-      if (decisionRows.length > 0) {
+      if (decisionRows.length > 0) {{
         applyDecision(decisionRows[0]);
-      }
+      }}
 
-      if (expandButton) {
-        expandButton.addEventListener("click", () => {
+      if (expandButton) {{
+        expandButton.addEventListener("click", () => {{
           visibleDecisionCount += 10;
           refreshDecisionTable();
-        });
-      }
+        }});
+      }}
 
-      if (buyFilterButton) {
-        buyFilterButton.addEventListener("click", () => {
+      if (buyFilterButton) {{
+        buyFilterButton.addEventListener("click", () => {{
           decisionFilter = "BUY";
           visibleDecisionCount = 10;
           setFilterButtons();
           refreshDecisionTable();
-        });
-      }
+        }});
+      }}
 
-      if (allFilterButton) {
-        allFilterButton.addEventListener("click", () => {
+      if (allFilterButton) {{
+        allFilterButton.addEventListener("click", () => {{
           decisionFilter = "ALL";
           visibleDecisionCount = 10;
           setFilterButtons();
           refreshDecisionTable();
-        });
-      }
+        }});
+      }}
 
       setFilterButtons();
       refreshDecisionTable();
+
+      function applyBacktestDecision(row) {{
+        if (!row || !backtestDecisionHeadline) return;
+        const payload = row.dataset.breakdown;
+        if (!payload) return;
+        const breakdown = JSON.parse(payload);
+        backtestDecisionHeadline.textContent = breakdown.headline || "Decision";
+        if (backtestDecisionTimestamp) {{
+          backtestDecisionTimestamp.textContent = breakdown.timestamp || "";
+        }}
+        if (backtestDecisionReasons) {{
+          backtestDecisionReasons.innerHTML = "";
+          (breakdown.reason_lines || []).forEach((line) => {{
+            const item = document.createElement("li");
+            item.textContent = line;
+            backtestDecisionReasons.appendChild(item);
+          }});
+        }}
+        if (backtestDecisionInterpretation) {{
+          backtestDecisionInterpretation.innerHTML = `<strong>Interpretation:</strong> ${{breakdown.interpretation || ""}}`;
+        }}
+        backtestDecisionRows.forEach((candidate) => candidate.classList.remove("decision-row-active"));
+        row.classList.add("decision-row-active");
+      }}
+
+      function refreshBacktestDecisionTable() {{
+        if (!backtestDecisionRows.length) return;
+        backtestDecisionRows.forEach((row, index) => {{
+          row.classList.toggle("decision-row-hidden", index >= visibleBacktestDecisionCount);
+        }});
+        if (backtestExpandButton) {{
+          const hiddenCount = Math.max(backtestDecisionRows.length - visibleBacktestDecisionCount, 0);
+          backtestExpandButton.style.display = hiddenCount > 0 ? "inline-flex" : "none";
+          backtestExpandButton.textContent = hiddenCount > 10 ? "Show 10 more" : "Show remaining";
+        }}
+        const selectedVisible = backtestDecisionRows.find((row) => row.classList.contains("decision-row-active") && !row.classList.contains("decision-row-hidden"));
+        if (!selectedVisible) {{
+          const firstVisible = backtestDecisionRows.find((row) => !row.classList.contains("decision-row-hidden"));
+          if (firstVisible) {{
+            applyBacktestDecision(firstVisible);
+          }}
+        }}
+      }}
+
+      backtestDecisionRows.forEach((row) => {{
+        row.addEventListener("click", () => applyBacktestDecision(row));
+      }});
+      if (backtestExpandButton) {{
+        backtestExpandButton.addEventListener("click", () => {{
+          visibleBacktestDecisionCount += 10;
+          refreshBacktestDecisionTable();
+        }});
+      }}
+      refreshBacktestDecisionTable();
+
+      if (window.Plotly && document.getElementById("tradePaperChart") && tradeChartPayload.length) {{
+        const chartStart = new Date(tradeChartPayload[0].timestamp).getTime();
+        const chartEnd = new Date(tradeChartPayload[tradeChartPayload.length - 1].timestamp).getTime();
+        const visibleTradeMarkers = tradeMarkersPayload.filter((trade) => {{
+          const ts = new Date(String(trade.timestamp)).getTime();
+          return Number.isFinite(ts) && ts >= chartStart && ts <= chartEnd;
+        }});
+        const closes = tradeChartPayload.map((point) => Number(point.close));
+        const lows = tradeChartPayload.map((point) => Number(point.low));
+        const highs = tradeChartPayload.map((point) => Number(point.high));
+        const x = tradeChartPayload.map((point) => point.timestamp);
+        const latestTrade = visibleTradeMarkers.length ? visibleTradeMarkers[visibleTradeMarkers.length - 1] : null;
+        const atr = {float((latest_cycle.get('indicator_snapshot') or {}).get('atr', 0.0)):.6f};
+        const lineTrace = {{
+          type: "candlestick",
+          x,
+          open: tradeChartPayload.map((point) => Number(point.open)),
+          high: highs,
+          low: lows,
+          close: closes,
+          increasing: {{ line: {{ color: "#16c784", width: 1.1 }}, fillcolor: "#16c784" }},
+          decreasing: {{ line: {{ color: "#ea3943", width: 1.1 }}, fillcolor: "#ea3943" }},
+        }};
+        const buyMarkers = visibleTradeMarkers.filter((trade) => String(trade.side).toLowerCase() === "buy");
+        const sellMarkers = visibleTradeMarkers.filter((trade) => String(trade.side).toLowerCase() === "sell");
+        const traces = [
+          lineTrace,
+          {{
+            type: "scatter",
+            mode: "markers",
+            x: buyMarkers.map((trade) => trade.timestamp),
+            y: buyMarkers.map((trade) => Number(trade.price)),
+            marker: {{ color: "#22c55e", size: 9, line: {{ color: "#052e16", width: 1 }} }},
+            name: "Buys",
+            hovertemplate: "BUY<br>%{{x|%b %d, %-I:%M %p}}<br>%{{y:$,.2f}}<extra></extra>",
+          }},
+          {{
+            type: "scatter",
+            mode: "markers",
+            x: sellMarkers.map((trade) => trade.timestamp),
+            y: sellMarkers.map((trade) => Number(trade.price)),
+            marker: {{ color: "#ef4444", size: 9, line: {{ color: "#450a0a", width: 1 }} }},
+            name: "Sells",
+            hovertemplate: "SELL<br>%{{x|%b %d, %-I:%M %p}}<br>%{{y:$,.2f}}<extra></extra>",
+          }},
+        ];
+        if (latestTrade && atr > 0) {{
+          const latestPrice = Number(latestTrade.price);
+          traces.push(
+            {{
+              type: "scatter",
+              mode: "lines",
+              x,
+              y: x.map(() => latestPrice + atr),
+              line: {{ color: "rgba(59,130,246,0.40)", width: 1, dash: "dot" }},
+              name: "ATR Upper",
+              hoverinfo: "skip",
+            }},
+            {{
+              type: "scatter",
+              mode: "lines",
+              x,
+              y: x.map(() => latestPrice - atr),
+              line: {{ color: "rgba(59,130,246,0.40)", width: 1, dash: "dot" }},
+              name: "ATR Lower",
+              hoverinfo: "skip",
+            }}
+          );
+        }}
+        Plotly.react("tradePaperChart", traces, {{
+          paper_bgcolor: "rgba(13,21,32,1)",
+          plot_bgcolor: "rgba(13,21,32,1)",
+          margin: {{ t: 20, r: 24, b: 36, l: 48 }},
+          showlegend: false,
+          xaxis: {{ type: "date", showgrid: false, tickfont: {{ color: "rgba(148,163,184,0.8)" }} }},
+          yaxis: {{ showgrid: true, gridcolor: "rgba(255,255,255,0.06)", tickformat: "$,.0f", tickfont: {{ color: "rgba(203,213,225,0.82)" }} }},
+        }}, {{ responsive: true, displayModeBar: false }});
+      }}
+
+      if (window.Plotly && document.getElementById("backtestEquityChart") && backtestChartsPayload.equity_curve) {{
+        Plotly.react("backtestEquityChart", [
+          {{
+            type: "scatter",
+            mode: "lines",
+            x: backtestChartsPayload.equity_curve.map((point) => point.timestamp),
+            y: backtestChartsPayload.equity_curve.map((point) => point.equity_usd),
+            name: "Strategy",
+            line: {{ color: "#f59e0b", width: 3 }},
+          }},
+          {{
+            type: "scatter",
+            mode: "lines",
+            x: backtestChartsPayload.benchmark_curve.map((point) => point.timestamp),
+            y: backtestChartsPayload.benchmark_curve.map((point) => point.equity_usd),
+            name: "Buy & Hold",
+            line: {{ color: "#60a5fa", width: 2, dash: "dot" }},
+          }},
+        ], {{
+          paper_bgcolor: "rgba(13,21,32,1)",
+          plot_bgcolor: "rgba(13,21,32,1)",
+          margin: {{ t: 20, r: 24, b: 36, l: 48 }},
+          showlegend: true,
+          legend: {{ font: {{ color: "#e2e8f0" }} }},
+          xaxis: {{ type: "date", showgrid: false, tickfont: {{ color: "rgba(148,163,184,0.8)" }} }},
+          yaxis: {{ showgrid: true, gridcolor: "rgba(255,255,255,0.06)", tickformat: "$,.0f", tickfont: {{ color: "rgba(203,213,225,0.82)" }} }},
+        }}, {{ responsive: true, displayModeBar: false }});
+        Plotly.react("backtestDrawdownChart", [
+          {{
+            type: "scatter",
+            mode: "lines",
+            x: backtestChartsPayload.drawdowns.map((point) => point.timestamp),
+            y: backtestChartsPayload.drawdowns.map((point) => point.drawdown_percent),
+            fill: "tozeroy",
+            line: {{ color: "#ef4444", width: 2 }},
+            fillcolor: "rgba(239,68,68,0.18)",
+            name: "Drawdown",
+          }},
+        ], {{
+          paper_bgcolor: "rgba(13,21,32,1)",
+          plot_bgcolor: "rgba(13,21,32,1)",
+          margin: {{ t: 20, r: 24, b: 36, l: 48 }},
+          showlegend: false,
+          xaxis: {{ type: "date", showgrid: false, tickfont: {{ color: "rgba(148,163,184,0.8)" }} }},
+          yaxis: {{ showgrid: true, gridcolor: "rgba(255,255,255,0.06)", ticksuffix: "%", tickfont: {{ color: "rgba(203,213,225,0.82)" }} }},
+        }}, {{ responsive: true, displayModeBar: false }});
+      }}
     </script>
     """
     return _base_html("Trades | Adaptive BTC Trading Agent", "trades", body, script)

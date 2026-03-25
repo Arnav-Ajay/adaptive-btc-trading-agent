@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from app.config.schema import (
     AppConfig,
     DataConfig,
@@ -30,7 +32,10 @@ def _build_config(tmp_path: Path) -> AppConfig:
         llm=LLMConfig(),
         execution=ExecutionConfig(
             initial_cash_usd=1_000.0,
-            paper_fee_bps=60.0,
+            execution_cost_preset="custom",
+            fee_pct=0.001,
+            spread_pct=0.0005,
+            slippage_pct=0.0005,
             paper_state_path=str(tmp_path / "paper_state.json"),
             paper_trade_log_path=str(tmp_path / "paper_ledger.jsonl"),
         ),
@@ -50,10 +55,12 @@ def test_paper_broker_persists_state_and_ledger(tmp_path) -> None:
 
     reloaded = PaperBroker(config)
     snapshot = reloaded.get_portfolio_snapshot()
-    assert snapshot.cash_usd == 899.4
+    assert snapshot.cash_usd == pytest.approx(900.0)
     assert snapshot.btc_units > 0
-    assert reloaded.latest_buy_price() == 50_000.0
-    assert snapshot.total_fees_usd == 0.6
+    assert reloaded.latest_buy_price() == pytest.approx(50_050.0)
+    assert snapshot.total_fees_usd == pytest.approx(0.1)
+    assert snapshot.total_spread_cost_usd == pytest.approx(0.05)
+    assert snapshot.total_slippage_cost_usd == pytest.approx(0.05)
     assert (tmp_path / "paper_ledger.jsonl").exists()
 
 
@@ -117,6 +124,8 @@ def test_paper_broker_tracks_realized_pnl_for_closed_swing_trade(tmp_path) -> No
     snapshot = broker.get_portfolio_snapshot()
     assert snapshot.realized_pnl_usd == sell_result.realized_pnl_usd
     assert snapshot.total_fees_usd > 0
+    assert snapshot.total_spread_cost_usd > 0
+    assert snapshot.total_slippage_cost_usd > 0
 
 
 def test_latest_buy_price_uses_most_recent_buy_fill_across_strategies(tmp_path) -> None:
@@ -147,4 +156,4 @@ def test_latest_buy_price_uses_most_recent_buy_fill_across_strategies(tmp_path) 
         )
     )
     assert second_buy.accepted is True
-    assert broker.latest_buy_price() == 70_849.20
+    assert broker.latest_buy_price() == pytest.approx(70_920.0492)

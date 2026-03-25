@@ -12,7 +12,9 @@ from pathlib import Path
 from app.backtest.metrics import (
     BacktestMetrics,
     compute_buy_and_hold_return_percent,
+    compute_drawdown_series,
     compute_max_drawdown_percent,
+    compute_profit_factor,
     compute_sharpe_ratio,
 )
 from app.config.schema import AppConfig
@@ -33,8 +35,10 @@ class BacktestStep:
     strategy_name: str
     signal_count: int
     execution_count: int
+    decision: str
     equity_usd: float
     drawdown_percent: float
+    trace: list[str]
 
 
 @dataclass(slots=True)
@@ -51,6 +55,10 @@ class BacktestResult:
     trades: list[dict[str, object]]
     steps: list[BacktestStep]
     equity_curve: list[dict[str, object]]
+    benchmark_curve: list[dict[str, object]]
+    drawdowns: list[dict[str, object]]
+    halted_reason: str | None = None
+    halted_at: str | None = None
 
 
 class BacktestEngine:
@@ -93,6 +101,9 @@ class BacktestEngine:
 
         steps: list[BacktestStep] = []
         equity_curve: list[dict[str, object]] = []
+        benchmark_curve: list[dict[str, object]] = []
+        halted_reason: str | None = None
+        halted_at: str | None = None
 
         for index in range(self.config.data.min_candles_required, len(candles) + 1):
             window = candles[:index]
@@ -100,6 +111,90 @@ class BacktestEngine:
             order_manager.mark_price(features.last_price)
             stop_results = order_manager.evaluate_stop_losses()
             snapshot = order_manager.broker.get_portfolio_snapshot()
+            timestamp = window[-1].timestamp.replace(microsecond=0).isoformat()
+
+            if any(result.accepted for result in stop_results):
+                latest_snapshot = order_manager.broker.get_portfolio_snapshot()
+                steps.append(
+                    BacktestStep(
+                        timestamp=timestamp,
+                        regime="n/a",
+                        strategy_name="StopLossExit",
+                        signal_count=0,
+                        execution_count=sum(1 for result in stop_results if result.accepted),
+                        decision="SELL",
+                        equity_usd=latest_snapshot.equity_usd,
+                        drawdown_percent=latest_snapshot.drawdown_percent,
+                        trace=[
+                            "halt:stop_loss_triggered",
+                            *[
+                                f"execution:{result.reason} accepted={result.accepted} side={(result.side.value if result.side else 'n/a')}"
+                                for result in stop_results
+                            ],
+                        ],
+                    )
+                )
+                equity_curve.append(
+                    {
+                        "timestamp": timestamp,
+                        "equity_usd": latest_snapshot.equity_usd,
+                        "cash_usd": latest_snapshot.cash_usd,
+                        "btc_units": latest_snapshot.btc_units,
+                    }
+                )
+                benchmark_curve.append(
+                    {
+                        "timestamp": timestamp,
+                        "equity_usd": self._buy_hold_equity(
+                            initial_cash=isolated_config.execution.initial_cash_usd,
+                            initial_price=candles[0].close,
+                            current_price=window[-1].close,
+                        ),
+                    }
+                )
+                halted_reason = "stop_loss_triggered"
+                halted_at = timestamp
+                break
+
+            if order_manager.guard.trading_paused(snapshot):
+                steps.append(
+                    BacktestStep(
+                        timestamp=timestamp,
+                        regime="n/a",
+                        strategy_name="PortfolioGuard",
+                        signal_count=0,
+                        execution_count=0,
+                        decision="HALT",
+                        equity_usd=snapshot.equity_usd,
+                        drawdown_percent=snapshot.drawdown_percent,
+                        trace=[
+                            "halt:max_drawdown_reached",
+                            f"drawdown_percent={snapshot.drawdown_percent:.2f}",
+                            f"max_drawdown_percent={isolated_config.trading.max_drawdown_percent:.2f}",
+                        ],
+                    )
+                )
+                equity_curve.append(
+                    {
+                        "timestamp": timestamp,
+                        "equity_usd": snapshot.equity_usd,
+                        "cash_usd": snapshot.cash_usd,
+                        "btc_units": snapshot.btc_units,
+                    }
+                )
+                benchmark_curve.append(
+                    {
+                        "timestamp": timestamp,
+                        "equity_usd": self._buy_hold_equity(
+                            initial_cash=isolated_config.execution.initial_cash_usd,
+                            initial_price=candles[0].close,
+                            current_price=window[-1].close,
+                        ),
+                    }
+                )
+                halted_reason = "max_drawdown_reached"
+                halted_at = timestamp
+                break
 
             context = AgentContext(config=isolated_config)
             context.available_cash_usd = snapshot.cash_usd
@@ -112,7 +207,6 @@ class BacktestEngine:
             execution_results = [*stop_results, *order_manager.execute(signals)]
             latest_snapshot = order_manager.broker.get_portfolio_snapshot()
 
-            timestamp = window[-1].timestamp.replace(microsecond=0).isoformat()
             steps.append(
                 BacktestStep(
                     timestamp=timestamp,
@@ -120,8 +214,16 @@ class BacktestEngine:
                     strategy_name=outcome.strategy_name,
                     signal_count=len(signals),
                     execution_count=sum(1 for result in execution_results if result.accepted),
+                    decision="BUY" if any(result.accepted and result.side == TradeSide.BUY for result in execution_results) else "SELL" if any(result.accepted and result.side == TradeSide.SELL for result in execution_results) else "HOLD" if signals else "NO BUY",
                     equity_usd=latest_snapshot.equity_usd,
                     drawdown_percent=latest_snapshot.drawdown_percent,
+                    trace=[
+                        *outcome.trace,
+                        *[
+                            f"execution:{result.reason} accepted={result.accepted} side={(result.side.value if result.side else 'n/a')}"
+                            for result in execution_results
+                        ],
+                    ],
                 )
             )
             equity_curve.append(
@@ -132,9 +234,24 @@ class BacktestEngine:
                     "btc_units": latest_snapshot.btc_units,
                 }
             )
+            benchmark_curve.append(
+                {
+                    "timestamp": timestamp,
+                    "equity_usd": self._buy_hold_equity(
+                        initial_cash=isolated_config.execution.initial_cash_usd,
+                        initial_price=candles[0].close,
+                        current_price=window[-1].close,
+                    ),
+                }
+            )
 
         trades = self._load_trade_log(Path(isolated_config.execution.paper_trade_log_path))
         final_snapshot = order_manager.broker.get_portfolio_snapshot()
+        drawdown_values = compute_drawdown_series([point["equity_usd"] for point in equity_curve])
+        drawdowns = [
+            {"timestamp": point["timestamp"], "drawdown_percent": drawdown}
+            for point, drawdown in zip(equity_curve, drawdown_values)
+        ]
         metrics = self._build_metrics(
             interval=interval,
             candles=candles,
@@ -154,6 +271,10 @@ class BacktestEngine:
             trades=trades,
             steps=steps,
             equity_curve=equity_curve,
+            benchmark_curve=benchmark_curve,
+            drawdowns=drawdowns,
+            halted_reason=halted_reason,
+            halted_at=halted_at,
         )
 
     def _load_candles(
@@ -201,7 +322,7 @@ class BacktestEngine:
             periods_per_year=self.PERIODS_PER_YEAR.get(interval, 365),
         )
         filled_trade_count = len(trades)
-        closed_trade_count, win_rate_percent = self._closed_trade_stats(trades)
+        closed_trade_count, win_rate_percent, avg_win_usd, avg_loss_usd, profit_factor = self._closed_trade_stats(trades)
         return BacktestMetrics(
             initial_equity_usd=initial_cash,
             final_equity_usd=final_equity,
@@ -213,6 +334,9 @@ class BacktestEngine:
             filled_trade_count=filled_trade_count,
             closed_trade_count=closed_trade_count,
             win_rate_percent=win_rate_percent,
+            avg_win_usd=avg_win_usd,
+            avg_loss_usd=avg_loss_usd,
+            profit_factor=profit_factor,
         )
 
     @staticmethod
@@ -228,17 +352,33 @@ class BacktestEngine:
         return trades
 
     @staticmethod
-    def _closed_trade_stats(trades: list[dict[str, object]]) -> tuple[int, float]:
-        """Compute closed-trade count and win rate from matched swing exits."""
+    def _closed_trade_stats(trades: list[dict[str, object]]) -> tuple[int, float, float, float, float]:
+        """Compute closed-trade stats from realized swing exits."""
         wins = 0
         closed = 0
+        realized_pnls: list[float] = []
         for trade in trades:
             strategy_name = str(trade.get("strategy_name", ""))
             side = str(trade.get("side", ""))
             if strategy_name != "SwingATRStrategy" or side != TradeSide.SELL.value:
                 continue
             closed += 1
-            if float(trade.get("realized_pnl_usd", 0.0) or 0.0) > 0:
+            realized_pnl = float(trade.get("realized_pnl_usd", 0.0) or 0.0)
+            realized_pnls.append(realized_pnl)
+            if realized_pnl > 0:
                 wins += 1
         win_rate = 0.0 if closed == 0 else (wins / closed) * 100
-        return closed, win_rate
+        wins_only = [value for value in realized_pnls if value > 0]
+        losses_only = [value for value in realized_pnls if value < 0]
+        avg_win = 0.0 if not wins_only else sum(wins_only) / len(wins_only)
+        avg_loss = 0.0 if not losses_only else sum(losses_only) / len(losses_only)
+        profit_factor = compute_profit_factor(realized_pnls)
+        return closed, win_rate, avg_win, avg_loss, profit_factor
+
+    @staticmethod
+    def _buy_hold_equity(initial_cash: float, initial_price: float, current_price: float) -> float:
+        """Compute the buy-and-hold benchmark equity at a given price."""
+        if initial_cash <= 0 or initial_price <= 0:
+            return initial_cash
+        units = initial_cash / initial_price
+        return units * current_price

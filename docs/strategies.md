@@ -86,6 +86,7 @@ Project perspective:
 - ATR stop-loss values are attached to swing entries.
 - Open swing positions are tracked separately from DCA holdings.
 - Stop-loss checks run before new entries in each trading cycle.
+- If a swing stop-loss exit fires, the live trading cycle now skips fresh entries for that same cycle.
 
 Example:
 
@@ -131,6 +132,10 @@ Current rule:
 
 - pause trading if:
   - `drawdown_percent >= max_drawdown_percent`
+
+Backtest behavior:
+
+- the same guard now halts historical replay early once the drawdown limit is breached
 
 ## Capital Allocator
 

@@ -21,19 +21,65 @@ def test_bitcoin_page_renders_navigation() -> None:
 def test_trades_page_renders_trade_section() -> None:
     """Trades page should render the portfolio and execution table layout."""
     client = TestClient(app)
-    response = client.get("/trades")
+    response = client.get("/trades?mode=paper")
     assert response.status_code == 200
     assert "Portfolio State" in response.text
     assert "Executed Buys and Sells" in response.text
+    assert "Final Cost" in response.text
     assert "Built by <strong>Arnav</strong> / <strong>Kaijo</strong>" in response.text
 
 
 def test_trades_page_can_render_backtest_summary() -> None:
-    """Trades page should render a backtest summary when requested."""
+    """Backtest subview should render controls and saved-run navigation without auto-running."""
+    client = TestClient(app)
+    response = client.get("/trades?mode=backtest")
+    assert response.status_code == 200
+    assert "Backtest Controls" in response.text
+    assert "Backtest History" in response.text
+    assert "Run Backtest" in response.text
+    assert 'name="start"' in response.text
+    assert 'name="end"' in response.text
+    assert 'name="fee_pct"' in response.text
+    assert 'name="spread_pct"' in response.text
+    assert 'name="slippage_pct"' in response.text
+
+
+def test_trades_page_can_run_backtest_summary() -> None:
+    """Trades page should render a backtest summary when explicitly requested."""
+    client = TestClient(app)
+    response = client.get("/trades?mode=backtest&run_backtest=1")
+    assert response.status_code == 200
+    assert "Backtest Results" in response.text
+    assert "Equity Curve" in response.text
+    assert "Decision Breakdown" in response.text
+    assert "Decision Log" in response.text
+    assert "Final Portfolio Value" in response.text
+    assert "Run Status" in response.text
+
+
+def test_trades_page_can_render_simulation_subview() -> None:
+    """Trades page should render the simulation placeholder subview."""
+    client = TestClient(app)
+    response = client.get("/trades?mode=simulation")
+    assert response.status_code == 200
+    assert "Simulation" in response.text
+    assert "Coming Soon" in response.text
+
+
+def test_trades_page_legacy_run_backtest_still_works() -> None:
+    """Legacy backtest query param should still open the backtesting subview."""
     client = TestClient(app)
     response = client.get("/trades?run_backtest=1")
     assert response.status_code == 200
-    assert "Backtest Summary" in response.text
+    assert "Backtest Results" in response.text
+
+
+def test_trades_page_backtest_accepts_datetime_local_inputs() -> None:
+    """Backtest form inputs from datetime-local should be normalized instead of causing a 500."""
+    client = TestClient(app)
+    response = client.get("/trades?mode=backtest&run_backtest=1&interval=30m&start=2026-01-01T13:10&end=2026-03-24T13:10")
+    assert response.status_code == 200
+    assert "Backtest Results" in response.text
 
 
 def test_backtest_api_returns_summary() -> None:
@@ -44,6 +90,21 @@ def test_backtest_api_returns_summary() -> None:
     payload = response.json()
     assert payload["interval"] == "30m"
     assert "metrics" in payload
+    assert "execution_costs" in payload
+
+
+def test_backtest_api_accepts_execution_cost_overrides() -> None:
+    """Backtest API should accept explicit execution-cost configuration."""
+    client = TestClient(app)
+    response = client.get(
+        "/api/backtest?interval=30m&execution_cost_preset=custom&fee_pct=0.0020&spread_pct=0.0010&slippage_pct=0.0015"
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["execution_costs"]["preset"] == "custom"
+    assert payload["execution_costs"]["fee_pct"] == 0.002
+    assert payload["execution_costs"]["spread_pct"] == 0.001
+    assert payload["execution_costs"]["slippage_pct"] == 0.0015
 
 
 def test_decision_breakdown_prefers_executed_swing_over_dca_skip_trace() -> None:

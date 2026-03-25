@@ -22,6 +22,9 @@ class BacktestMetrics:
     filled_trade_count: int
     closed_trade_count: int
     win_rate_percent: float
+    avg_win_usd: float
+    avg_loss_usd: float
+    profit_factor: float
 
 
 def summarize_portfolio(snapshot: PortfolioSnapshot) -> str:
@@ -78,4 +81,28 @@ def compute_buy_and_hold_return_percent(
     if initial_price <= 0:
         return 0.0
     return ((final_price - initial_price) / initial_price) * 100
+
+
+def compute_drawdown_series(equity_curve: list[float]) -> list[float]:
+    """Compute point-in-time drawdown percentages from an equity curve."""
+    if not equity_curve:
+        return []
+    peak = equity_curve[0]
+    series: list[float] = []
+    for equity in equity_curve:
+        peak = max(peak, equity)
+        if peak <= 0:
+            series.append(0.0)
+            continue
+        series.append(((peak - equity) / peak) * 100)
+    return series
+
+
+def compute_profit_factor(realized_pnls: list[float]) -> float:
+    """Compute profit factor from realized trade PnLs."""
+    gross_profit = sum(value for value in realized_pnls if value > 0)
+    gross_loss = abs(sum(value for value in realized_pnls if value < 0))
+    if gross_loss == 0:
+        return gross_profit if gross_profit > 0 else 0.0
+    return gross_profit / gross_loss
 

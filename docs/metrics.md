@@ -41,6 +41,37 @@ Example:
 Example:
 - ATR `54.74` on BTC around `70k` means average recent one-minute movement is about `$55`, which is fairly calm.
 
+## Execution Costs
+
+- Code:
+  - [app/execution/cost_model.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/execution/cost_model.py)
+  - [app/execution/paper_broker.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/execution/paper_broker.py)
+- Current model:
+  - fee
+  - spread
+  - slippage
+- Financial meaning:
+  - fee is the explicit trading charge
+  - spread models crossing the bid/ask gap
+  - slippage models execution worse than the observed market price
+- Project perspective:
+  - applied in both paper trading and backtesting
+  - tracked separately in broker state and trade ledger
+  - surfaced in UI as cumulative execution cost and per-trade total cost
+
+Buy model:
+
+- `effective_price = market_price * (1 + spread_pct + slippage_pct)`
+- `fee = usd_amount * fee_pct`
+- `btc_bought = (usd_amount - fee) / effective_price`
+
+Sell model:
+
+- `effective_price = market_price * (1 - spread_pct - slippage_pct)`
+- `gross_usd = btc_amount * effective_price`
+- `fee = gross_usd * fee_pct`
+- `usd_received = gross_usd - fee`
+
 ## RSI
 
 - Full name: Relative Strength Index.

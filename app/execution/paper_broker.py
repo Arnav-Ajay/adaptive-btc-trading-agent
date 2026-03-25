@@ -9,6 +9,7 @@ from pathlib import Path
 
 from app.config.schema import AppConfig
 from app.execution.broker_interface import BrokerInterface
+from app.execution.cost_model import apply_buy_costs, apply_sell_costs
 from app.utils.models import OrderRequest, OrderResult, PortfolioSnapshot, SwingPosition, TradeFill, TradeSide
 
 
@@ -24,6 +25,8 @@ class PaperBrokerState:
     peak_equity: float
     realized_pnl_usd: float
     total_fees_usd: float
+    total_spread_cost_usd: float
+    total_slippage_cost_usd: float
     updated_at: str
 
 
@@ -40,16 +43,28 @@ class PaperBroker(BrokerInterface):
     def place_order(self, order: OrderRequest) -> OrderResult:
         """Execute a simulated order and persist balances and ledger."""
         self.mark_price(order.price)
-        btc_units = order.size_usd / order.price if order.price > 0 else 0.0
         order_id = f"paper-{int(datetime.now(UTC).timestamp() * 1000)}"
         strategy_name = self._resolve_strategy_name(order)
-        fee_usd = self._calculate_fee(order.size_usd)
+        reference_price = order.price
+        fee_pct = self.config.execution.fee_pct
+        spread_pct = self.config.execution.spread_pct
+        slippage_pct = self.config.execution.slippage_pct
 
-        if order.side is TradeSide.BUY and (order.size_usd + fee_usd) <= self.state.cash_usd:
-            self.state.cash_usd -= order.size_usd + fee_usd
-            self.state.total_fees_usd += fee_usd
+        if order.side is TradeSide.BUY and order.size_usd <= self.state.cash_usd:
+            execution = apply_buy_costs(
+                market_price=reference_price,
+                usd_amount=order.size_usd,
+                fee_pct=fee_pct,
+                spread_pct=spread_pct,
+                slippage_pct=slippage_pct,
+            )
+            btc_units = execution.btc_units
+            self.state.cash_usd -= execution.cash_flow_usd
+            self.state.total_fees_usd += execution.fee_usd
+            self.state.total_spread_cost_usd += execution.spread_cost_usd
+            self.state.total_slippage_cost_usd += execution.slippage_cost_usd
             if strategy_name == "DCAStrategy":
-                new_total_cost = (self.state.dca_avg_entry_price * self.state.dca_btc_units) + order.size_usd + fee_usd
+                new_total_cost = (self.state.dca_avg_entry_price * self.state.dca_btc_units) + execution.cash_flow_usd
                 new_total_units = self.state.dca_btc_units + btc_units
                 self.state.dca_btc_units = new_total_units
                 self.state.dca_avg_entry_price = new_total_cost / new_total_units if new_total_units > 0 else 0.0
@@ -58,12 +73,14 @@ class PaperBroker(BrokerInterface):
                     SwingPosition(
                         position_id=order_id,
                         symbol=order.symbol,
-                        entry_price=order.price,
+                        entry_price=execution.effective_price,
                         stop_loss=order.stop_loss or 0.0,
                         btc_units=btc_units,
-                        size_usd=order.size_usd,
+                        size_usd=execution.cash_flow_usd,
                         opened_at=datetime.now(UTC).replace(microsecond=0).isoformat(),
-                        entry_fee_usd=fee_usd,
+                        entry_fee_usd=execution.fee_usd,
+                        entry_spread_cost_usd=execution.spread_cost_usd,
+                        entry_slippage_cost_usd=execution.slippage_cost_usd,
                     )
                 )
             self._append_fill(
@@ -71,14 +88,18 @@ class PaperBroker(BrokerInterface):
                     timestamp=datetime.now(UTC),
                     side=order.side,
                     symbol=order.symbol,
-                    size_usd=order.size_usd,
-                    price=order.price,
+                    size_usd=execution.cash_flow_usd,
+                    price=execution.effective_price,
                     btc_units=btc_units,
                     order_id=order_id,
                     reason=order.reason or "filled",
                     strategy_name=strategy_name,
                     stop_loss=order.stop_loss,
-                    fee_usd=fee_usd,
+                    fee_usd=execution.fee_usd,
+                    spread_cost_usd=execution.spread_cost_usd,
+                    slippage_cost_usd=execution.slippage_cost_usd,
+                    execution_cost_usd=execution.execution_cost_usd,
+                    reference_price=reference_price,
                 )
             )
             self._save_state()
@@ -88,19 +109,33 @@ class PaperBroker(BrokerInterface):
                 reason=order.reason or "filled",
                 side=order.side,
                 symbol=order.symbol,
-                size_usd=order.size_usd,
-                price=order.price,
+                size_usd=execution.cash_flow_usd,
+                price=execution.effective_price,
                 strategy_name=strategy_name,
                 stop_loss=order.stop_loss,
-                fee_usd=fee_usd,
+                fee_usd=execution.fee_usd,
+                spread_cost_usd=execution.spread_cost_usd,
+                slippage_cost_usd=execution.slippage_cost_usd,
+                execution_cost_usd=execution.execution_cost_usd,
+                reference_price=reference_price,
             )
 
         if order.side is TradeSide.SELL and self._can_sell(order):
-            self.state.cash_usd += order.size_usd - fee_usd
-            self.state.total_fees_usd += fee_usd
+            btc_units = order.size_usd / order.price if order.price > 0 else 0.0
+            execution = apply_sell_costs(
+                market_price=reference_price,
+                btc_amount=btc_units,
+                fee_pct=fee_pct,
+                spread_pct=spread_pct,
+                slippage_pct=slippage_pct,
+            )
+            self.state.cash_usd += execution.cash_flow_usd
+            self.state.total_fees_usd += execution.fee_usd
+            self.state.total_spread_cost_usd += execution.spread_cost_usd
+            self.state.total_slippage_cost_usd += execution.slippage_cost_usd
             realized_pnl_usd: float | None = None
             if strategy_name == "DCAStrategy":
-                realized_pnl_usd = order.size_usd - fee_usd - (self.state.dca_avg_entry_price * btc_units)
+                realized_pnl_usd = execution.cash_flow_usd - (self.state.dca_avg_entry_price * btc_units)
                 self.state.dca_btc_units -= btc_units
                 if self.state.dca_btc_units <= 0:
                     self.state.dca_btc_units = 0.0
@@ -108,8 +143,8 @@ class PaperBroker(BrokerInterface):
             else:
                 position = self._remove_swing_position(order_id=order.reason.removeprefix("stop_loss_hit:") if order.reason.startswith("stop_loss_hit:") else "")
                 if position:
-                    entry_cost = float(position.get("size_usd", 0.0)) + float(position.get("entry_fee_usd", 0.0))
-                    realized_pnl_usd = order.size_usd - fee_usd - entry_cost
+                    entry_cost = float(position.get("size_usd", 0.0))
+                    realized_pnl_usd = execution.cash_flow_usd - entry_cost
             if realized_pnl_usd is not None:
                 self.state.realized_pnl_usd += realized_pnl_usd
             self._append_fill(
@@ -117,14 +152,18 @@ class PaperBroker(BrokerInterface):
                     timestamp=datetime.now(UTC),
                     side=order.side,
                     symbol=order.symbol,
-                    size_usd=order.size_usd,
-                    price=order.price,
-                    btc_units=btc_units,
+                    size_usd=execution.cash_flow_usd,
+                    price=execution.effective_price,
+                    btc_units=execution.btc_units,
                     order_id=order_id,
                     reason=order.reason or "filled",
                     strategy_name=strategy_name,
                     stop_loss=order.stop_loss,
-                    fee_usd=fee_usd,
+                    fee_usd=execution.fee_usd,
+                    spread_cost_usd=execution.spread_cost_usd,
+                    slippage_cost_usd=execution.slippage_cost_usd,
+                    execution_cost_usd=execution.execution_cost_usd,
+                    reference_price=reference_price,
                     realized_pnl_usd=realized_pnl_usd,
                 )
             )
@@ -135,11 +174,15 @@ class PaperBroker(BrokerInterface):
                 reason=order.reason or "filled",
                 side=order.side,
                 symbol=order.symbol,
-                size_usd=order.size_usd,
-                price=order.price,
+                size_usd=execution.cash_flow_usd,
+                price=execution.effective_price,
                 strategy_name=strategy_name,
                 stop_loss=order.stop_loss,
-                fee_usd=fee_usd,
+                fee_usd=execution.fee_usd,
+                spread_cost_usd=execution.spread_cost_usd,
+                slippage_cost_usd=execution.slippage_cost_usd,
+                execution_cost_usd=execution.execution_cost_usd,
+                reference_price=reference_price,
                 realized_pnl_usd=realized_pnl_usd,
             )
 
@@ -150,17 +193,21 @@ class PaperBroker(BrokerInterface):
             side=order.side,
             symbol=order.symbol,
             size_usd=order.size_usd,
-            price=order.price,
+            price=reference_price,
             strategy_name=strategy_name,
             stop_loss=order.stop_loss,
-            fee_usd=fee_usd,
+            fee_usd=0.0,
+            spread_cost_usd=0.0,
+            slippage_cost_usd=0.0,
+            execution_cost_usd=0.0,
+            reference_price=reference_price,
         )
 
     def get_portfolio_snapshot(self) -> PortfolioSnapshot:
         """Return a point-in-time view of the paper portfolio."""
         swing_units = sum(float(position["btc_units"]) for position in self.state.open_swing_positions)
         total_btc_units = self.state.dca_btc_units + swing_units
-        swing_cost = sum(float(position["size_usd"]) + float(position.get("entry_fee_usd", 0.0)) for position in self.state.open_swing_positions)
+        swing_cost = sum(float(position["size_usd"]) for position in self.state.open_swing_positions)
         total_cost = (self.state.dca_avg_entry_price * self.state.dca_btc_units) + swing_cost
         avg_entry_price = total_cost / total_btc_units if total_btc_units > 0 else 0.0
         equity = self.state.cash_usd + (total_btc_units * self.state.last_mark_price)
@@ -179,6 +226,8 @@ class PaperBroker(BrokerInterface):
             swing_btc_units=swing_units,
             realized_pnl_usd=self.state.realized_pnl_usd,
             total_fees_usd=self.state.total_fees_usd,
+            total_spread_cost_usd=self.state.total_spread_cost_usd,
+            total_slippage_cost_usd=self.state.total_slippage_cost_usd,
         )
 
     def mark_price(self, price: float) -> None:
@@ -243,6 +292,8 @@ class PaperBroker(BrokerInterface):
                 peak_equity=self.config.execution.initial_cash_usd,
                 realized_pnl_usd=0.0,
                 total_fees_usd=0.0,
+                total_spread_cost_usd=0.0,
+                total_slippage_cost_usd=0.0,
                 updated_at=datetime.now(UTC).replace(microsecond=0).isoformat(),
             )
 
@@ -257,10 +308,14 @@ class PaperBroker(BrokerInterface):
                 "peak_equity": payload.get("peak_equity", self.config.execution.initial_cash_usd),
                 "realized_pnl_usd": payload.get("realized_pnl_usd", 0.0),
                 "total_fees_usd": payload.get("total_fees_usd", 0.0),
+                "total_spread_cost_usd": payload.get("total_spread_cost_usd", 0.0),
+                "total_slippage_cost_usd": payload.get("total_slippage_cost_usd", 0.0),
                 "updated_at": payload.get("updated_at", datetime.now(UTC).replace(microsecond=0).isoformat()),
             }
         payload.setdefault("realized_pnl_usd", 0.0)
         payload.setdefault("total_fees_usd", 0.0)
+        payload.setdefault("total_spread_cost_usd", 0.0)
+        payload.setdefault("total_slippage_cost_usd", 0.0)
         return PaperBrokerState(**payload)
 
     def _save_state(self) -> None:
@@ -287,6 +342,10 @@ class PaperBroker(BrokerInterface):
             "strategy_name": fill.strategy_name,
             "stop_loss": fill.stop_loss,
             "fee_usd": fill.fee_usd,
+            "spread_cost_usd": fill.spread_cost_usd,
+            "slippage_cost_usd": fill.slippage_cost_usd,
+            "execution_cost_usd": fill.execution_cost_usd,
+            "reference_price": fill.reference_price,
             "realized_pnl_usd": fill.realized_pnl_usd,
         }
         with self.trade_log_path.open("a", encoding="utf-8") as handle:
@@ -330,6 +389,3 @@ class PaperBroker(BrokerInterface):
             return "SwingATRStrategy"
         return "DCAStrategy"
 
-    def _calculate_fee(self, size_usd: float) -> float:
-        """Calculate notional-based paper trading fees."""
-        return size_usd * (self.config.execution.paper_fee_bps / 10_000)

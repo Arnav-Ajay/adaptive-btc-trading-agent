@@ -41,6 +41,45 @@ def run_cycle(config: AppConfig | None = None) -> None:
     order_manager.mark_price(features.last_price)
     stop_results = order_manager.evaluate_stop_losses()
     snapshot = order_manager.broker.get_portfolio_snapshot()
+    if any(result.accepted for result in stop_results):
+        summary = summarize_portfolio(snapshot)
+        journal.record_cycle(
+            cycle=cycle_number,
+            regime="n/a",
+            strategy_name="StopLossExit",
+            indicator_snapshot={
+                "candle_count": len(candles),
+                "latest_candle_timestamp": candles[-1].timestamp.replace(microsecond=0).isoformat(),
+                "last_price": features.last_price,
+                "atr": features.atr,
+                "rsi": features.rsi,
+                "ema_fast": features.ema_fast,
+                "ema_slow": features.ema_slow,
+                "macd": features.macd,
+                "macd_signal": features.macd_signal,
+                "macd_histogram": features.macd_histogram,
+            },
+            decision_trace=[
+                "halt:stop_loss_triggered",
+                *[
+                    f"execution:{result.reason} accepted={result.accepted} side={(result.side.value if result.side else 'n/a')}"
+                    for result in stop_results
+                ],
+            ],
+            signal_count=0,
+            execution_results=stop_results,
+            snapshot=snapshot,
+            summary=summary,
+        )
+        notifier.notify_cycle(
+            cycle=cycle_number,
+            regime="n/a",
+            signal_count=0,
+            execution_results=stop_results,
+            summary=summary,
+        )
+        logger.warning("Skipping new entries for this cycle because a stop-loss exit was triggered")
+        return
     context.available_cash_usd = snapshot.cash_usd
     context.latest_buy_fill_price = order_manager.broker.latest_buy_price()
     regime = market_data_service.detect_regime(features)

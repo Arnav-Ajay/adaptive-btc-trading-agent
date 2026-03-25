@@ -10,6 +10,7 @@ from typing import Any
 
 from app.config.schema import AppConfig
 from app.config.sheet_loader import GoogleSheetConfigLoader
+from app.execution.cost_model import resolve_execution_costs
 
 
 def _load_env() -> dict[str, Any]:
@@ -133,11 +134,27 @@ def _apply_env_overrides(base_config: dict[str, Any], env: dict[str, Any]) -> di
         env.get("PAPER_TRADING_ENABLED"),
         execution.get("paper_trading_enabled", True),
     )
+    execution["execution_cost_preset"] = env.get(
+        "EXECUTION_COST_PRESET",
+        execution.get("execution_cost_preset", "simple"),
+    )
     execution["paper_fee_bps"] = float(
         env.get(
             "PAPER_FEE_BPS",
             execution.get("paper_fee_bps", 0.0),
         )
+    )
+    default_fee_pct = execution.get("fee_pct")
+    if default_fee_pct is None:
+        default_fee_pct = float(execution.get("paper_fee_bps", 0.0)) / 10_000
+    execution["fee_pct"] = float(env.get("FEE_PCT", default_fee_pct))
+    execution["spread_pct"] = float(env.get("SPREAD_PCT", execution.get("spread_pct", 0.0005)))
+    execution["slippage_pct"] = float(env.get("SLIPPAGE_PCT", execution.get("slippage_pct", 0.0005)))
+    execution["fee_pct"], execution["spread_pct"], execution["slippage_pct"] = resolve_execution_costs(
+        preset=execution["execution_cost_preset"],
+        fee_pct=float(execution["fee_pct"]),
+        spread_pct=float(execution["spread_pct"]),
+        slippage_pct=float(execution["slippage_pct"]),
     )
     execution["paper_state_path"] = env.get(
         "PAPER_STATE_PATH",

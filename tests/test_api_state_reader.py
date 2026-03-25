@@ -60,3 +60,16 @@ def test_load_dashboard_state_reads_latest_artifacts(tmp_path) -> None:
     assert state["latest_trade"]["side"] == "buy"
     assert state["latest_cycle"]["cycle"] == 4
     assert state["latest_trace"]["strategy_name"] == "DCAStrategy"
+
+
+def test_load_dashboard_state_can_skip_full_chart_sets(tmp_path) -> None:
+    """Trades-page state loading should be able to avoid loading large chart payloads."""
+    config = _build_config(tmp_path)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+
+    (state_dir / "ingestion.json").write_text(json.dumps({"provider": "coinbase"}), encoding="utf-8")
+
+    state = load_dashboard_state(config, include_candles=False)
+    assert state["recent_candles"] == []
+    assert state["chart_candles"] == {}
