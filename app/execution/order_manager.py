@@ -53,6 +53,17 @@ class OrderManager:
                 symbol=signal.symbol,
                 size_usd=signal.size_usd,
                 price=price,
+                reason=signal.reason,
+                stop_loss=signal.stop_loss,
+                strategy_name=signal.strategy_name,
             )
             results.append(self.broker.place_order(order))
         return results
+
+    def mark_price(self, price: float) -> None:
+        """Update broker mark price before signal review or summary generation."""
+        self.broker.mark_price(price)
+
+    def evaluate_stop_losses(self) -> list[OrderResult]:
+        """Close swing trades whose ATR stop-loss has been hit."""
+        return self.broker.evaluate_stop_losses()

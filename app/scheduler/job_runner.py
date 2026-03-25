@@ -23,3 +23,20 @@ def seconds_until_next_interval(interval_minutes: int, now: datetime | None = No
     if boundary <= current:
         boundary += timedelta(minutes=interval_minutes)
     return max((boundary - current).total_seconds(), 0.0)
+
+
+def seconds_until_next_interval_with_offset(
+    interval_minutes: int,
+    offset_minutes: int,
+    now: datetime | None = None,
+) -> float:
+    """Return seconds until the next aligned interval boundary plus a minute offset."""
+    if interval_minutes <= 0:
+        return 0.0
+
+    current = now or datetime.now().astimezone()
+    aligned_minute = (current.minute // interval_minutes) * interval_minutes
+    boundary = current.replace(minute=aligned_minute, second=0, microsecond=0) + timedelta(minutes=offset_minutes)
+    if boundary <= current:
+        boundary += timedelta(minutes=interval_minutes)
+    return max((boundary - current).total_seconds(), 0.0)

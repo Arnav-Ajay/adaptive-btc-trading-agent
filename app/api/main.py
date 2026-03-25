@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from dataclasses import asdict
+from datetime import UTC, datetime, timedelta
 from html import escape
 from statistics import mean
 
@@ -291,6 +292,21 @@ def _parse_optional_iso_datetime(value: str | None) -> datetime | None:
         raise HTTPException(status_code=400, detail=f"invalid_datetime:{value}") from exc
 
 
+def _default_backtest_start(interval: str, end_at: datetime | None) -> datetime | None:
+    """Choose a bounded default backtest window for UI/API calls."""
+    if end_at is None:
+        return None
+    if interval == "1m":
+        return end_at - timedelta(days=7)
+    if interval == "10m":
+        return end_at - timedelta(days=21)
+    if interval == "30m":
+        return end_at - timedelta(days=60)
+    if interval == "1hr":
+        return end_at - timedelta(days=120)
+    return end_at - timedelta(days=365)
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     """Return a minimal API health response."""
@@ -338,19 +354,23 @@ def api_trades(limit: int = Query(default=25, ge=1, le=250)) -> dict[str, object
 @app.get("/api/backtest")
 def api_backtest(
     symbol: str | None = None,
-    interval: str = Query(default="1m"),
+    interval: str = Query(default="30m"),
     start: str | None = None,
     end: str | None = None,
 ) -> dict[str, object]:
     """Run a historical backtest over parquet candles and return summary output."""
     config = load_config()
     engine = BacktestEngine(config)
+    end_at = _parse_optional_iso_datetime(end)
+    start_at = _parse_optional_iso_datetime(start)
+    if start_at is None:
+        start_at = _default_backtest_start(interval=interval, end_at=end_at or datetime.now(UTC))
     try:
         result = engine.run(
             symbol=symbol or config.trading.symbol,
             interval=interval,
-            start_at=_parse_optional_iso_datetime(start),
-            end_at=_parse_optional_iso_datetime(end),
+            start_at=start_at,
+            end_at=end_at,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -360,8 +380,8 @@ def api_backtest(
         "start_at": result.start_at,
         "end_at": result.end_at,
         "candles_processed": result.candles_processed,
-        "metrics": result.metrics.__dict__,
-        "final_snapshot": result.final_snapshot.__dict__,
+        "metrics": asdict(result.metrics),
+        "final_snapshot": asdict(result.final_snapshot),
         "trade_count": len(result.trades),
         "equity_curve_points": len(result.equity_curve),
     }
@@ -855,7 +875,12 @@ def trades_page(run_backtest: int = Query(default=0, ge=0, le=1)) -> str:
     backtest_summary = ""
     if run_backtest:
         try:
-            backtest = BacktestEngine(config).run(symbol=config.trading.symbol, interval=config.ingestion.interval)
+            interval = "30m"
+            backtest = BacktestEngine(config).run(
+                symbol=config.trading.symbol,
+                interval=interval,
+                start_at=_default_backtest_start(interval=interval, end_at=datetime.now(UTC)),
+            )
             metrics = backtest.metrics
             backtest_summary = f"""
             <section class="panel">
