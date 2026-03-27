@@ -15,7 +15,10 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from app.backtest.engine import BacktestEngine
 from app.backtest.history import save_backtest_result
 from app.api.state_reader import load_dashboard_state
+from app.data.parquet_market_data import ParquetMarketDataClient
 from app.config.settings import load_config
+from app.simulation.engine import SimulationEngine
+from app.simulation.history import save_simulation_result
 
 app = FastAPI(title="Adaptive BTC Trading Agent", version="0.1.0")
 
@@ -269,7 +272,15 @@ def _decision_breakdown(latest_cycle: dict[str, object] | None, latest_trace: di
     executions = latest_cycle.get("execution_results", [])
     accepted_executions = [item for item in executions if item.get("accepted")]
     signal_count = int(latest_cycle.get("signal_count", 0))
-    decision = "BUY" if accepted_executions else ("WATCH" if signal_count > 0 else "NO BUY")
+    has_buy_execution = any(str(item.get("side", "")).lower() == "buy" for item in accepted_executions)
+    has_sell_execution = any(str(item.get("side", "")).lower() == "sell" for item in accepted_executions)
+    if accepted_executions and not has_buy_execution and not has_sell_execution:
+        has_sell_execution = any(
+            str(item.get("reason", "")).startswith(("stop_loss_hit:", "swing_take_profit:", "swing_signal_exit:"))
+            for item in accepted_executions
+        )
+        has_buy_execution = not has_sell_execution
+    decision = "SELL" if has_sell_execution else "BUY" if has_buy_execution else ("WATCH" if signal_count > 0 else "NO BUY")
     recorded_at = str(latest_cycle.get("recorded_at", ""))
     indicator_snapshot = latest_cycle.get("indicator_snapshot", {}) if latest_cycle else {}
 
@@ -351,6 +362,53 @@ def _decision_breakdown(latest_cycle: dict[str, object] | None, latest_trace: di
                 "decision": decision,
                 "reason_lines": reason_lines,
                 "interpretation": "The swing layer inside the hybrid strategy found a valid momentum setup and opened a tracked swing position.",
+                "timestamp": recorded_at,
+            }
+        if reason.startswith("stop_loss_hit:"):
+            return {
+                "headline": f"Decision: {decision}",
+                "decision": decision,
+                "reason_lines": [
+                    "The tracked swing stop-loss was breached.",
+                    f"Exit executed at ${price:.2f} for ${size_usd:.2f}.",
+                    f"Protected stop level was ${float(stop_loss or 0.0):.2f}.",
+                ],
+                "interpretation": "The swing position was closed defensively because price moved through the configured ATR stop-loss.",
+                "timestamp": recorded_at,
+            }
+        if reason.startswith("swing_take_profit:"):
+            return {
+                "headline": f"Decision: {decision}",
+                "decision": decision,
+                "reason_lines": [
+                    "The swing take-profit target was reached.",
+                    f"Exit executed at ${price:.2f} for ${size_usd:.2f}.",
+                ],
+                "interpretation": "The swing layer locked in gains after price reached the configured take-profit level.",
+                "timestamp": recorded_at,
+            }
+        if reason.startswith("swing_signal_exit:"):
+            exit_checks = _swing_check_lines()
+            return {
+                "headline": f"Decision: {decision}",
+                "decision": decision,
+                "reason_lines": [
+                    "Swing exit conditions were triggered as momentum weakened.",
+                    *exit_checks,
+                    f"Exit executed at ${price:.2f} for ${size_usd:.2f}.",
+                ],
+                "interpretation": "The swing layer closed the position because the trend/momentum filters no longer supported staying in the trade.",
+                "timestamp": recorded_at,
+            }
+        if reason.startswith("swing_no_follow_through:"):
+            return {
+                "headline": f"Decision: {decision}",
+                "decision": decision,
+                "reason_lines": [
+                    "The swing entry did not get enough positive follow-through after entry.",
+                    f"Exit executed at ${price:.2f} for ${size_usd:.2f}.",
+                ],
+                "interpretation": "The swing layer cut the trade early because momentum failed to follow through after the initial entry.",
                 "timestamp": recorded_at,
             }
         if reason in {"initial_dca_entry", "price_drop_dca_entry", "dca_drop_buy"}:
@@ -569,6 +627,15 @@ def _format_backtest_decision_row(step: dict[str, object], hidden: bool = False)
         "</tr>"
     )
 
+
+def _decision_matches_filter(decision_value: str, filter_value: str) -> bool:
+    """Return whether a decision value should be shown for the active filter."""
+    normalized_filter = filter_value.upper()
+    normalized_decision = decision_value.upper()
+    if normalized_filter == "ALL":
+        return True
+    return normalized_decision == normalized_filter
+
 def _format_display_timestamp(value: str | None) -> str:
     """Format an ISO timestamp for UI display."""
     if not value:
@@ -607,6 +674,54 @@ def _default_backtest_start(interval: str, end_at: datetime | None) -> datetime 
     return end_at - timedelta(days=365)
 
 
+def _available_replay_bounds(config) -> tuple[datetime, datetime | None]:
+    """Return the supported replay bounds for UI controls and route clamping."""
+    earliest = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    try:
+        latest_candles = ParquetMarketDataClient(config).fetch_dashboard_candles(interval=config.ingestion.interval, limit=1)
+    except OSError:
+        latest_candles = []
+    latest = latest_candles[-1].timestamp.astimezone(UTC) if latest_candles else None
+    return earliest, latest
+
+
+def _clamp_datetime(value: datetime | None, *, lower: datetime, upper: datetime | None) -> datetime | None:
+    """Clamp a datetime into the available replay window."""
+    if value is None:
+        return None
+    if value < lower:
+        return lower
+    if upper is not None and value > upper:
+        return upper
+    return value
+
+
+def _normalize_replay_window(
+    *,
+    interval: str,
+    start_at: datetime | None,
+    end_at: datetime | None,
+    lower_bound: datetime,
+    upper_bound: datetime | None,
+) -> tuple[datetime | None, datetime | None]:
+    """Clamp and default a replay window to the available data range."""
+    normalized_end = _clamp_datetime(end_at, lower=lower_bound, upper=upper_bound) or upper_bound
+    normalized_start = _clamp_datetime(start_at, lower=lower_bound, upper=upper_bound)
+    if normalized_start is None and normalized_end is not None:
+        normalized_start = _default_backtest_start(interval=interval, end_at=normalized_end)
+    normalized_start = _clamp_datetime(normalized_start, lower=lower_bound, upper=upper_bound)
+    if normalized_end is not None and normalized_start is not None and normalized_start > normalized_end:
+        normalized_start = lower_bound if lower_bound <= normalized_end else normalized_end
+    return normalized_start, normalized_end
+
+
+def _to_datetime_local_value(value: datetime | None) -> str:
+    """Format a UTC datetime for datetime-local inputs."""
+    if value is None:
+        return ""
+    return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M")
+
+
 def _configured_backtest_config(
     *,
     base_config,
@@ -622,6 +737,22 @@ def _configured_backtest_config(
     config.execution.spread_pct = spread_pct
     config.execution.slippage_pct = slippage_pct
     return config
+
+
+def _parse_float_sweep(raw: str | None, default: list[float]) -> list[float]:
+    """Parse a comma-separated float list for simulation sweeps."""
+    if raw is None or not raw.strip():
+        return default
+    values = [float(item.strip()) for item in raw.split(",") if item.strip()]
+    return values or default
+
+
+def _parse_int_sweep(raw: str | None, default: list[int]) -> list[int]:
+    """Parse a comma-separated int list for simulation sweeps."""
+    if raw is None or not raw.strip():
+        return default
+    values = [int(item.strip()) for item in raw.split(",") if item.strip()]
+    return values or default
 
 
 @app.get("/health")
@@ -1317,6 +1448,7 @@ def bitcoin_page() -> str:
 @app.get("/trades", response_class=HTMLResponse)
 def trades_page(
     run_backtest: int = Query(default=0, ge=0, le=1),
+    run_simulation: int = Query(default=0, ge=0, le=1),
     mode: str = Query(default="paper"),
     interval: str = Query(default="30m"),
     start: str | None = None,
@@ -1327,18 +1459,27 @@ def trades_page(
     slippage_pct: float = Query(default=0.0005, ge=0.0, le=0.1),
     backtest_recorded_at: str | None = None,
     backtest_run_idx: int | None = Query(default=None, ge=0),
+    simulation_run_idx: int | None = Query(default=None, ge=0),
+    sim_rsi_values: str | None = None,
+    sim_take_profit_values: str | None = None,
+    sim_no_follow_values: str | None = None,
+    sim_follow_buffer_values: str | None = None,
+    sim_atr_values: str | None = None,
 ) -> str:
     """Render the trades and portfolio dashboard."""
-    view_mode = "backtest" if run_backtest else mode.lower()
+    view_mode = "simulation" if run_simulation else "backtest" if run_backtest else mode.lower()
     if view_mode not in {"paper", "backtest", "simulation"}:
         view_mode = "paper"
     config = load_config()
+    replay_lower_bound, replay_upper_bound = _available_replay_bounds(config)
     include_trade_chart = view_mode == "paper"
     state = load_dashboard_state(
         config,
         include_candles=include_trade_chart,
         candle_intervals=["1m"] if include_trade_chart else None,
         candle_limit=90 if include_trade_chart else None,
+        include_backtests=view_mode == "backtest",
+        include_simulations=view_mode == "simulation",
     )
     latest_cycle = state["latest_cycle"] or {}
     latest_trace = state["latest_trace"] or {}
@@ -1406,14 +1547,32 @@ def trades_page(
     backtest_summary = ""
     backtest_portfolio_side = ""
     selected_backtest: dict[str, object] | None = None
+    simulation_summary = ""
+    simulation_side = ""
+    selected_simulation: dict[str, object] | None = None
     selected_fee_pct = fee_pct if fee_pct is not None else config.execution.fee_pct
     selected_spread_pct = spread_pct if spread_pct is not None else config.execution.spread_pct
     selected_slippage_pct = slippage_pct if slippage_pct is not None else config.execution.slippage_pct
-    default_backtest_end = datetime.now(UTC).replace(microsecond=0, second=0)
-    default_backtest_start = _default_backtest_start(interval=interval, end_at=default_backtest_end)
-    backtest_start_value = start or (default_backtest_start.isoformat() if default_backtest_start else "")
-    backtest_end_value = end or default_backtest_end.isoformat()
+    selected_sim_rsi_values = sim_rsi_values or "35,40,45"
+    selected_sim_take_profit_values = sim_take_profit_values or "1.5,2.0"
+    selected_sim_no_follow_values = sim_no_follow_values or "2,3"
+    selected_sim_follow_buffer_values = sim_follow_buffer_values or "0.1,0.2"
+    selected_sim_atr_values = sim_atr_values or "1.5,2.0"
+    parsed_start = _parse_optional_iso_datetime(start)
+    parsed_end = _parse_optional_iso_datetime(end)
+    normalized_start, normalized_end = _normalize_replay_window(
+        interval=interval,
+        start_at=parsed_start,
+        end_at=parsed_end,
+        lower_bound=replay_lower_bound,
+        upper_bound=replay_upper_bound,
+    )
+    backtest_start_value = _to_datetime_local_value(normalized_start)
+    backtest_end_value = _to_datetime_local_value(normalized_end)
+    replay_min_value = _to_datetime_local_value(replay_lower_bound)
+    replay_max_value = _to_datetime_local_value(replay_upper_bound)
     available_backtests = list(reversed(state.get("recent_backtests", [])))
+    available_simulations = list(reversed(state.get("recent_simulations", [])))
     if backtest_run_idx is not None and backtest_run_idx < len(available_backtests):
         selected_backtest = available_backtests[backtest_run_idx]
     elif backtest_recorded_at:
@@ -1426,6 +1585,15 @@ def trades_page(
     selected_backtest_idx = (
         available_backtests.index(selected_backtest)
         if selected_backtest in available_backtests
+        else 0
+    )
+    if simulation_run_idx is not None and simulation_run_idx < len(available_simulations):
+        selected_simulation = available_simulations[simulation_run_idx]
+    if selected_simulation is None:
+        selected_simulation = state.get("latest_simulation") or (available_simulations[0] if available_simulations else None)
+    selected_simulation_idx = (
+        available_simulations.index(selected_simulation)
+        if selected_simulation in available_simulations
         else 0
     )
 
@@ -1444,6 +1612,22 @@ def trades_page(
         )
         if available_backtests
         else "<div class='empty'>No saved backtest runs yet.</div>"
+    )
+    simulation_history_nav = (
+        "".join(
+            f"""
+            <a class="history-link {'active' if index == selected_simulation_idx else ''}"
+               href="/trades?mode=simulation&simulation_run_idx={index}"
+               style="text-decoration:none;">
+              <div class="history-link-meta">{escape(_format_display_timestamp(str(run.get('recorded_at', ''))))}</div>
+              <div class="history-link-main">{int(run.get('candidate_count', 0))} candidates</div>
+              <div class="history-link-sub">Best {float((((run.get('candidates') or [{}])[0].get('summary') or {}).get('metrics') or {}).get('total_return_percent', 0.0)):+.2f}% return</div>
+            </a>
+            """
+            for index, run in enumerate(available_simulations)
+        )
+        if available_simulations
+        else "<div class='empty'>No saved simulation runs yet.</div>"
     )
     latest_trade_summary = "No trades recorded yet."
     latest_trade_timestamp = ""
@@ -1536,6 +1720,7 @@ def trades_page(
           </div>
           <div class="segmented" style="margin-top:.8rem;">
             <button class="seg-btn active" id="decision-filter-buy" type="button">Buy</button>
+            <button class="seg-btn" id="decision-filter-sell" type="button">Sell</button>
             <button class="seg-btn" id="decision-filter-all" type="button">All</button>
           </div>
           <div class="trade-table-wrap">
@@ -1582,11 +1767,11 @@ def trades_page(
               </div>
               <div class="field">
                 <label for="backtestStart">Start</label>
-                <input id="backtestStart" type="datetime-local" name="start" value="{escape(backtest_start_value.replace('Z', '+00:00')[:16] if backtest_start_value else '')}" />
+                <input id="backtestStart" type="datetime-local" name="start" min="{escape(replay_min_value)}" max="{escape(replay_max_value)}" value="{escape(backtest_start_value)}" />
               </div>
               <div class="field">
                 <label for="backtestEnd">End</label>
-                <input id="backtestEnd" type="datetime-local" name="end" value="{escape(backtest_end_value.replace('Z', '+00:00')[:16] if backtest_end_value else '')}" />
+                <input id="backtestEnd" type="datetime-local" name="end" min="{escape(replay_min_value)}" max="{escape(replay_max_value)}" value="{escape(backtest_end_value)}" />
               </div>
               <input type="hidden" name="execution_cost_preset" value="custom" />
             </div>
@@ -1634,10 +1819,7 @@ def trades_page(
     )
     if view_mode == "backtest" and run_backtest:
         try:
-            end_at = _parse_optional_iso_datetime(end)
-            start_at = _parse_optional_iso_datetime(start)
-            if start_at is None:
-                start_at = _default_backtest_start(interval=interval, end_at=end_at or datetime.now(UTC))
+            start_at, end_at = normalized_start, normalized_end
             backtest_config = _configured_backtest_config(
                 base_config=config,
                 execution_cost_preset="custom",
@@ -1728,6 +1910,11 @@ def trades_page(
                   <div class="trade-section-title">Historical Replay ({escape(str(selected_backtest.get('interval', 'n/a')))})</div>
                 </div>
               </div>
+              <div class="market-mini" style="margin-top:.35rem; margin-bottom:.95rem;">
+                <div class="mini-row"><div class="mini-label">Replay Window</div><div class="mini-value">{escape(_format_display_timestamp(str(selected_backtest.get('start_at', ''))))} to {escape(_format_display_timestamp(str(selected_backtest.get('end_at', ''))))}</div></div>
+                <div class="mini-row"><div class="mini-label">Saved Run</div><div class="mini-value">{escape(_format_display_timestamp(str(selected_backtest.get('recorded_at', ''))))}</div></div>
+                <div class="mini-row"><div class="mini-label">Run End</div><div class="mini-value">{escape(_format_display_timestamp(halted_at)) if halted_at else 'Completed selected window'}</div></div>
+              </div>
               <div class="subgrid" style="margin-top:.8rem;">
                 <div class="metric light"><div class="metric-label">Total Return</div><div class="metric-value">{float(metrics.get('total_return_percent', 0.0)):+.2f}%</div></div>
                 <div class="metric light"><div class="metric-label">Buy & Hold</div><div class="metric-value">{float(metrics.get('buy_and_hold_return_percent', 0.0)):+.2f}%</div></div>
@@ -1742,9 +1929,6 @@ def trades_page(
                 <div class="metric light"><div class="metric-label">Spread Cost</div><div class="metric-value">${total_spread:.2f}</div></div>
                 <div class="metric light"><div class="metric-label">Slippage Cost</div><div class="metric-value">${total_slippage:.2f}</div></div>
               </div>
-              <p style="margin-top:.8rem;">Window: {escape(_format_display_timestamp(str(selected_backtest.get('start_at', ''))))} to {escape(_format_display_timestamp(str(selected_backtest.get('end_at', ''))))}</p>
-              <p>Saved Run: {escape(_format_display_timestamp(str(selected_backtest.get('recorded_at', ''))))}</p>
-              <p>{'Stopped at: ' + escape(_format_display_timestamp(halted_at)) if halted_at else 'Replay covered the full selected window.'}</p>
             </section>
             <section class="trade-section decision-card">
               <div class="trade-section-head">
@@ -1765,6 +1949,11 @@ def trades_page(
                   <div class="label">Decision Log</div>
                   <div class="trade-section-title">Replay Decision Timeline</div>
                 </div>
+              </div>
+              <div class="segmented" style="margin-top:.8rem;">
+                <button class="seg-btn active" id="backtest-decision-filter-buy" type="button">Buy</button>
+                <button class="seg-btn" id="backtest-decision-filter-sell" type="button">Sell</button>
+                <button class="seg-btn" id="backtest-decision-filter-all" type="button">All</button>
               </div>
               <div class="trade-table-wrap">
               <table>
@@ -1798,18 +1987,214 @@ def trades_page(
             backtest_empty
         )
     backtest_sections = backtest_controls + (backtest_summary or backtest_empty)
-    simulation_sections = """
-        <section class="trade-section simulation-card">
-          <div class="label">Simulation</div>
-          <div class="value">Coming Soon</div>
-          <p>This subview is reserved for scenario-driven simulations. It is not implemented yet.</p>
-          <div class="trade-note-strip">
-            <span class="trade-note-pill">Scenario templates</span>
-            <span class="trade-note-pill">What-if capital changes</span>
-            <span class="trade-note-pill">Stress testing</span>
+    simulation_payload = ""
+    simulation_controls = f"""
+        <section class="trade-section">
+          <div class="trade-section-head">
+            <div>
+              <div class="label">Simulation Controls</div>
+              <div class="trade-section-title">Strategy Parameter Sweep</div>
+              <div class="trade-section-note">Run a bounded parameter sweep over the current swing strategy to compare which settings improve return, drawdown, and trade count.</div>
+            </div>
           </div>
+          <form method="get" action="/trades" style="margin-top:.9rem; display:grid; gap:.8rem;">
+            <input type="hidden" name="mode" value="simulation" />
+            <input type="hidden" name="run_simulation" value="1" />
+            <div class="filter-grid" style="display:grid; grid-template-columns:180px 1fr 1fr auto;">
+              <div class="field">
+                <label for="simulationInterval">Interval</label>
+                <select id="simulationInterval" name="interval">
+                  <option value="1m" {'selected' if interval == '1m' else ''}>1m</option>
+                  <option value="10m" {'selected' if interval == '10m' else ''}>10m</option>
+                  <option value="30m" {'selected' if interval == '30m' else ''}>30m</option>
+                  <option value="1hr" {'selected' if interval == '1hr' else ''}>1hr</option>
+                  <option value="1d" {'selected' if interval == '1d' else ''}>1d</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="simulationStart">Start</label>
+                <input id="simulationStart" type="datetime-local" name="start" min="{escape(replay_min_value)}" max="{escape(replay_max_value)}" value="{escape(backtest_start_value)}" />
+              </div>
+              <div class="field">
+                <label for="simulationEnd">End</label>
+                <input id="simulationEnd" type="datetime-local" name="end" min="{escape(replay_min_value)}" max="{escape(replay_max_value)}" value="{escape(backtest_end_value)}" />
+              </div>
+              <div class="filter-actions" style="align-items:end;">
+                <button class="ghost" type="submit">Run Simulation</button>
+              </div>
+            </div>
+            <div class="filter-grid" style="display:grid; grid-template-columns:repeat(3, 1fr);">
+              <div class="field">
+                <label for="simRsiValues">RSI Max Values</label>
+                <input id="simRsiValues" type="text" name="sim_rsi_values" value="{escape(selected_sim_rsi_values)}" />
+              </div>
+              <div class="field">
+                <label for="simTakeProfitValues">Take Profit % Values</label>
+                <input id="simTakeProfitValues" type="text" name="sim_take_profit_values" value="{escape(selected_sim_take_profit_values)}" />
+              </div>
+              <div class="field">
+                <label for="simAtrValues">ATR Multiplier Values</label>
+                <input id="simAtrValues" type="text" name="sim_atr_values" value="{escape(selected_sim_atr_values)}" />
+              </div>
+            </div>
+            <div class="filter-grid" style="display:grid; grid-template-columns:repeat(2, 1fr);">
+              <div class="field">
+                <label for="simNoFollowValues">No Follow-Through Candle Values</label>
+                <input id="simNoFollowValues" type="text" name="sim_no_follow_values" value="{escape(selected_sim_no_follow_values)}" />
+              </div>
+              <div class="field">
+                <label for="simFollowBufferValues">Follow-Through Buffer % Values</label>
+                <input id="simFollowBufferValues" type="text" name="sim_follow_buffer_values" value="{escape(selected_sim_follow_buffer_values)}" />
+              </div>
+            </div>
+          </form>
         </section>
     """
+    simulation_empty = """
+        <section class="trade-section simulation-card">
+          <div class="label">Simulation Results</div>
+          <div class="value">Not Run Yet</div>
+          <p>Run a parameter sweep from this view to compare multiple strategy configurations against the same historical window.</p>
+        </section>
+    """
+    if view_mode == "simulation" and run_simulation:
+        try:
+            start_at, end_at = normalized_start, normalized_end
+            parameter_grid = {
+                "swing_entry_rsi_max": _parse_float_sweep(sim_rsi_values, [35.0, 40.0, 45.0]),
+                "swing_take_profit_percent": _parse_float_sweep(sim_take_profit_values, [1.5, 2.0]),
+                "swing_no_follow_through_candles": _parse_int_sweep(sim_no_follow_values, [2, 3]),
+                "swing_follow_through_buffer_percent": _parse_float_sweep(sim_follow_buffer_values, [0.1, 0.2]),
+                "atr_multiplier": _parse_float_sweep(sim_atr_values, [1.5, 2.0]),
+            }
+            simulation_result = SimulationEngine(config).run(
+                symbol=config.trading.symbol,
+                interval=interval,
+                start_at=start_at,
+                end_at=end_at,
+                parameter_grid=parameter_grid,
+            )
+            selected_simulation = save_simulation_result(config.data.data_lake_path, simulation_result)
+        except ValueError as exc:
+            simulation_summary = f"""
+            <section class="trade-section">
+              <div class="label">Simulation Results</div>
+              <div class="value">Unavailable</div>
+              <p>{escape(str(exc))}</p>
+            </section>
+            """
+    if view_mode == "simulation" and not simulation_summary and selected_simulation:
+        candidates = list(selected_simulation.get("candidates", []))
+        best_candidate = candidates[0] if candidates else None
+        if best_candidate is not None:
+            best_backtest = best_candidate.get("backtest", {}) or {}
+            best_metrics = ((best_candidate.get("summary") or {}).get("metrics") or {})
+            simulation_payload = json.dumps(
+                {
+                    "equity_curve": best_backtest.get("equity_curve", []),
+                    "benchmark_curve": best_backtest.get("benchmark_curve", []),
+                    "drawdowns": best_backtest.get("drawdowns", []),
+                }
+            )
+            candidate_rows_list: list[str] = []
+            for candidate in candidates[:12]:
+                params = candidate.get("params") or {}
+                metrics = ((candidate.get("summary") or {}).get("metrics") or {})
+                candidate_rows_list.append(
+                    "<tr>"
+                    f"<td>{escape(str(candidate.get('candidate_id', 'n/a')))}</td>"
+                    f"<td>RSI &lt; {float(params.get('swing_entry_rsi_max', 0.0)):.0f}</td>"
+                    f"<td>{float(params.get('swing_take_profit_percent', 0.0)):.2f}%</td>"
+                    f"<td>{int(params.get('swing_no_follow_through_candles', 0))}</td>"
+                    f"<td>{float(params.get('swing_follow_through_buffer_percent', 0.0)):.2f}%</td>"
+                    f"<td>{float(params.get('atr_multiplier', 0.0)):.2f}</td>"
+                    f"<td>{float(metrics.get('total_return_percent', 0.0)):+.2f}%</td>"
+                    f"<td>{float(metrics.get('max_drawdown_percent', 0.0)):.2f}%</td>"
+                    f"<td>{int(metrics.get('filled_trade_count', 0))}</td>"
+                    "</tr>"
+                )
+            candidate_rows = "".join(candidate_rows_list) or "<tr><td class='empty' colspan='9'>No simulation candidates recorded.</td></tr>"
+            simulation_side = f"""
+            <section class="trade-section" style="display:{'block' if view_mode == 'simulation' else 'none'};">
+              <div class="label">Best Candidate</div>
+              <div class="value">{escape(str(best_candidate.get('candidate_id', 'n/a')))}</div>
+              <div class="market-mini">
+                <div class="mini-row"><div class="mini-label">RSI Max</div><div class="mini-value">{float((best_candidate.get('params') or {}).get('swing_entry_rsi_max', 0.0)):.0f}</div></div>
+                <div class="mini-row"><div class="mini-label">Take Profit</div><div class="mini-value">{float((best_candidate.get('params') or {}).get('swing_take_profit_percent', 0.0)):.2f}%</div></div>
+                <div class="mini-row"><div class="mini-label">No Follow Candles</div><div class="mini-value">{int((best_candidate.get('params') or {}).get('swing_no_follow_through_candles', 0))}</div></div>
+                <div class="mini-row"><div class="mini-label">Follow Buffer</div><div class="mini-value">{float((best_candidate.get('params') or {}).get('swing_follow_through_buffer_percent', 0.0)):.2f}%</div></div>
+                <div class="mini-row"><div class="mini-label">ATR Multiplier</div><div class="mini-value">{float((best_candidate.get('params') or {}).get('atr_multiplier', 0.0)):.2f}</div></div>
+              </div>
+            </section>
+            <section class="trade-section" style="display:{'block' if view_mode == 'simulation' else 'none'};">
+              <div class="label">Simulation History</div>
+              <div class="history-stack">{simulation_history_nav}</div>
+            </section>
+            """
+            simulation_summary = f"""
+            <section class="trade-section">
+              <div class="trade-section-head">
+                <div>
+                  <div class="label">Simulation Results</div>
+                  <div class="trade-section-title">Parameter Sweep ({escape(str(selected_simulation.get('interval', 'n/a')))})</div>
+                </div>
+              </div>
+              <div class="market-mini" style="margin-top:.35rem; margin-bottom:.95rem;">
+                <div class="mini-row"><div class="mini-label">Replay Window</div><div class="mini-value">{escape(_format_display_timestamp(str(selected_simulation.get('start_at', ''))))} to {escape(_format_display_timestamp(str(selected_simulation.get('end_at', ''))))}</div></div>
+                <div class="mini-row"><div class="mini-label">Saved Run</div><div class="mini-value">{escape(_format_display_timestamp(str(selected_simulation.get('recorded_at', ''))))}</div></div>
+                <div class="mini-row"><div class="mini-label">Candidates Tested</div><div class="mini-value">{int(selected_simulation.get('candidate_count', 0))}</div></div>
+              </div>
+              <div class="subgrid" style="margin-top:.8rem;">
+                <div class="metric light"><div class="metric-label">Best Return</div><div class="metric-value">{float(best_metrics.get('total_return_percent', 0.0)):+.2f}%</div></div>
+                <div class="metric light"><div class="metric-label">Buy & Hold</div><div class="metric-value">{float(best_metrics.get('buy_and_hold_return_percent', 0.0)):+.2f}%</div></div>
+                <div class="metric light"><div class="metric-label">Max Drawdown</div><div class="metric-value">{float(best_metrics.get('max_drawdown_percent', 0.0)):.2f}%</div></div>
+                <div class="metric light"><div class="metric-label">Sharpe</div><div class="metric-value">{float(best_metrics.get('sharpe_ratio', 0.0)):.2f}</div></div>
+                <div class="metric light"><div class="metric-label">Win Rate</div><div class="metric-value">{float(best_metrics.get('win_rate_percent', 0.0)):.2f}%</div></div>
+                <div class="metric light"><div class="metric-label">Trades</div><div class="metric-value">{int(best_metrics.get('filled_trade_count', 0))}</div></div>
+              </div>
+            </section>
+            <section class="trade-section">
+              <div class="trade-section-head">
+                <div>
+                  <div class="label">Ranked Candidates</div>
+                  <div class="trade-section-title">Top Parameter Sets</div>
+                  <div class="trade-section-note">Candidates are ranked by return first, then drawdown, profit factor, and Sharpe.</div>
+                </div>
+              </div>
+              <div class="trade-table-wrap">
+                <table>
+                  <thead>
+                    <tr><th>ID</th><th>Entry</th><th>TP</th><th>No Follow</th><th>Buffer</th><th>ATR</th><th>Return</th><th>Drawdown</th><th>Trades</th></tr>
+                  </thead>
+                  <tbody>{candidate_rows}</tbody>
+                </table>
+              </div>
+            </section>
+            <section class="trade-section chart-card">
+              <div class="label">Best Candidate Curve</div>
+              <div class="value">Strategy vs Buy & Hold</div>
+              <div class="trade-chart-frame" style="margin-top:.8rem;">
+                <div id="simulationEquityChart" class="chart-surface" style="height:320px;"></div>
+              </div>
+            </section>
+            <section class="trade-section chart-card">
+              <div class="label">Best Candidate Drawdowns</div>
+              <div class="value">Peak-to-Trough Decline</div>
+              <div class="trade-chart-frame" style="margin-top:.8rem;">
+                <div id="simulationDrawdownChart" class="chart-surface" style="height:280px;"></div>
+              </div>
+            </section>
+            """
+    if not simulation_summary:
+        simulation_summary = simulation_empty
+    if not simulation_side:
+        simulation_side = f"""
+        <section class="trade-section" style="display:{'block' if view_mode == 'simulation' else 'none'};">
+          <div class="label">Simulation History</div>
+          <div class="history-stack">{simulation_history_nav}</div>
+        </section>
+        """
+    simulation_sections = simulation_controls + simulation_summary
     main_sections = paper_sections if view_mode == "paper" else backtest_sections if view_mode == "backtest" else simulation_sections
     system_mode_value = "Paper Trading" if view_mode == "paper" else "Backtesting" if view_mode == "backtest" else "Simulation"
     system_mode_text = (
@@ -1871,6 +2256,7 @@ def trades_page(
           <div class="label">Backtest History</div>
           <div class="history-stack">{backtest_history_nav}</div>
         </section>
+        {simulation_side}
         <section class="trade-section" style="display:{'block' if view_mode == 'paper' else 'none'};">
           <div class="label">Active Swing Positions</div>
           <table>
@@ -1895,6 +2281,7 @@ def trades_page(
       const tradeChartPayload = {paper_chart_payload};
       const tradeMarkersPayload = {paper_trades_payload};
       const backtestChartsPayload = {backtest_payload or "{}"};
+      const simulationChartsPayload = {simulation_payload or "{}"};
       const decisionHeadline = document.getElementById("decision-headline");
       const decisionTimestamp = document.getElementById("decision-timestamp");
       const decisionReasons = document.getElementById("decision-reasons");
@@ -1902,6 +2289,7 @@ def trades_page(
       const decisionRows = Array.from(document.querySelectorAll(".decision-row"));
       const expandButton = document.getElementById("decision-log-expand");
       const buyFilterButton = document.getElementById("decision-filter-buy");
+      const sellFilterButton = document.getElementById("decision-filter-sell");
       const allFilterButton = document.getElementById("decision-filter-all");
       const backtestDecisionHeadline = document.getElementById("backtest-decision-headline");
       const backtestDecisionTimestamp = document.getElementById("backtest-decision-timestamp");
@@ -1909,13 +2297,20 @@ def trades_page(
       const backtestDecisionInterpretation = document.getElementById("backtest-decision-interpretation");
       const backtestDecisionRows = Array.from(document.querySelectorAll(".backtest-decision-row"));
       const backtestExpandButton = document.getElementById("backtest-decision-expand");
+      const backtestBuyFilterButton = document.getElementById("backtest-decision-filter-buy");
+      const backtestSellFilterButton = document.getElementById("backtest-decision-filter-sell");
+      const backtestAllFilterButton = document.getElementById("backtest-decision-filter-all");
       let decisionFilter = "BUY";
+      let backtestDecisionFilter = "BUY";
       let visibleDecisionCount = 10;
       let visibleBacktestDecisionCount = 10;
 
       function setFilterButtons() {{
         if (buyFilterButton) {{
           buyFilterButton.classList.toggle("active", decisionFilter === "BUY");
+        }}
+        if (sellFilterButton) {{
+          sellFilterButton.classList.toggle("active", decisionFilter === "SELL");
         }}
         if (allFilterButton) {{
           allFilterButton.classList.toggle("active", decisionFilter === "ALL");
@@ -1928,7 +2323,7 @@ def trades_page(
         }}
         return decisionRows.filter((row) => {{
           const decisionCell = row.querySelector(".decision-cell");
-          return (decisionCell?.textContent || "").trim().toUpperCase() === "BUY";
+          return (decisionCell?.textContent || "").trim().toUpperCase() === decisionFilter;
         }});
       }}
 
@@ -2000,6 +2395,15 @@ def trades_page(
         }});
       }}
 
+      if (sellFilterButton) {{
+        sellFilterButton.addEventListener("click", () => {{
+          decisionFilter = "SELL";
+          visibleDecisionCount = 10;
+          setFilterButtons();
+          refreshDecisionTable();
+        }});
+      }}
+
       if (allFilterButton) {{
         allFilterButton.addEventListener("click", () => {{
           decisionFilter = "ALL";
@@ -2011,6 +2415,28 @@ def trades_page(
 
       setFilterButtons();
       refreshDecisionTable();
+
+      function setBacktestFilterButtons() {{
+        if (backtestBuyFilterButton) {{
+          backtestBuyFilterButton.classList.toggle("active", backtestDecisionFilter === "BUY");
+        }}
+        if (backtestSellFilterButton) {{
+          backtestSellFilterButton.classList.toggle("active", backtestDecisionFilter === "SELL");
+        }}
+        if (backtestAllFilterButton) {{
+          backtestAllFilterButton.classList.toggle("active", backtestDecisionFilter === "ALL");
+        }}
+      }}
+
+      function filteredBacktestDecisionRows() {{
+        if (backtestDecisionFilter === "ALL") {{
+          return backtestDecisionRows;
+        }}
+        return backtestDecisionRows.filter((row) => {{
+          const decisionCell = row.querySelector(".decision-cell");
+          return (decisionCell?.textContent || "").trim().toUpperCase() === backtestDecisionFilter;
+        }});
+      }}
 
       function applyBacktestDecision(row) {{
         if (!row || !backtestDecisionHeadline) return;
@@ -2038,17 +2464,21 @@ def trades_page(
 
       function refreshBacktestDecisionTable() {{
         if (!backtestDecisionRows.length) return;
-        backtestDecisionRows.forEach((row, index) => {{
-          row.classList.toggle("decision-row-hidden", index >= visibleBacktestDecisionCount);
+        const matchingRows = filteredBacktestDecisionRows();
+        backtestDecisionRows.forEach((row) => {{
+          row.classList.add("decision-row-hidden");
+        }});
+        matchingRows.slice(0, visibleBacktestDecisionCount).forEach((row) => {{
+          row.classList.remove("decision-row-hidden");
         }});
         if (backtestExpandButton) {{
-          const hiddenCount = Math.max(backtestDecisionRows.length - visibleBacktestDecisionCount, 0);
+          const hiddenCount = Math.max(matchingRows.length - visibleBacktestDecisionCount, 0);
           backtestExpandButton.style.display = hiddenCount > 0 ? "inline-flex" : "none";
           backtestExpandButton.textContent = hiddenCount > 10 ? "Show 10 more" : "Show remaining";
         }}
         const selectedVisible = backtestDecisionRows.find((row) => row.classList.contains("decision-row-active") && !row.classList.contains("decision-row-hidden"));
         if (!selectedVisible) {{
-          const firstVisible = backtestDecisionRows.find((row) => !row.classList.contains("decision-row-hidden"));
+          const firstVisible = matchingRows.find((row) => !row.classList.contains("decision-row-hidden"));
           if (firstVisible) {{
             applyBacktestDecision(firstVisible);
           }}
@@ -2064,6 +2494,31 @@ def trades_page(
           refreshBacktestDecisionTable();
         }});
       }}
+      if (backtestBuyFilterButton) {{
+        backtestBuyFilterButton.addEventListener("click", () => {{
+          backtestDecisionFilter = "BUY";
+          visibleBacktestDecisionCount = 10;
+          setBacktestFilterButtons();
+          refreshBacktestDecisionTable();
+        }});
+      }}
+      if (backtestSellFilterButton) {{
+        backtestSellFilterButton.addEventListener("click", () => {{
+          backtestDecisionFilter = "SELL";
+          visibleBacktestDecisionCount = 10;
+          setBacktestFilterButtons();
+          refreshBacktestDecisionTable();
+        }});
+      }}
+      if (backtestAllFilterButton) {{
+        backtestAllFilterButton.addEventListener("click", () => {{
+          backtestDecisionFilter = "ALL";
+          visibleBacktestDecisionCount = 10;
+          setBacktestFilterButtons();
+          refreshBacktestDecisionTable();
+        }});
+      }}
+      setBacktestFilterButtons();
       refreshBacktestDecisionTable();
 
       if (window.Plotly && document.getElementById("tradePaperChart") && tradeChartPayload.length) {{
@@ -2178,6 +2633,54 @@ def trades_page(
             mode: "lines",
             x: backtestChartsPayload.drawdowns.map((point) => point.timestamp),
             y: backtestChartsPayload.drawdowns.map((point) => point.drawdown_percent),
+            fill: "tozeroy",
+            line: {{ color: "#ef4444", width: 2 }},
+            fillcolor: "rgba(239,68,68,0.18)",
+            name: "Drawdown",
+          }},
+        ], {{
+          paper_bgcolor: "rgba(13,21,32,1)",
+          plot_bgcolor: "rgba(13,21,32,1)",
+          margin: {{ t: 20, r: 24, b: 36, l: 48 }},
+          showlegend: false,
+          xaxis: {{ type: "date", showgrid: false, tickfont: {{ color: "rgba(148,163,184,0.8)" }} }},
+          yaxis: {{ showgrid: true, gridcolor: "rgba(255,255,255,0.06)", ticksuffix: "%", tickfont: {{ color: "rgba(203,213,225,0.82)" }} }},
+        }}, {{ responsive: true, displayModeBar: false }});
+      }}
+
+      if (window.Plotly && document.getElementById("simulationEquityChart") && simulationChartsPayload.equity_curve) {{
+        Plotly.react("simulationEquityChart", [
+          {{
+            type: "scatter",
+            mode: "lines",
+            x: simulationChartsPayload.equity_curve.map((point) => point.timestamp),
+            y: simulationChartsPayload.equity_curve.map((point) => point.equity_usd),
+            name: "Best Candidate",
+            line: {{ color: "#16a34a", width: 3 }},
+          }},
+          {{
+            type: "scatter",
+            mode: "lines",
+            x: simulationChartsPayload.benchmark_curve.map((point) => point.timestamp),
+            y: simulationChartsPayload.benchmark_curve.map((point) => point.equity_usd),
+            name: "Buy & Hold",
+            line: {{ color: "#60a5fa", width: 2, dash: "dot" }},
+          }},
+        ], {{
+          paper_bgcolor: "rgba(13,21,32,1)",
+          plot_bgcolor: "rgba(13,21,32,1)",
+          margin: {{ t: 20, r: 24, b: 36, l: 48 }},
+          showlegend: true,
+          legend: {{ font: {{ color: "#e2e8f0" }} }},
+          xaxis: {{ type: "date", showgrid: false, tickfont: {{ color: "rgba(148,163,184,0.8)" }} }},
+          yaxis: {{ showgrid: true, gridcolor: "rgba(255,255,255,0.06)", tickformat: "$,.0f", tickfont: {{ color: "rgba(203,213,225,0.82)" }} }},
+        }}, {{ responsive: true, displayModeBar: false }});
+        Plotly.react("simulationDrawdownChart", [
+          {{
+            type: "scatter",
+            mode: "lines",
+            x: simulationChartsPayload.drawdowns.map((point) => point.timestamp),
+            y: simulationChartsPayload.drawdowns.map((point) => point.drawdown_percent),
             fill: "tozeroy",
             line: {{ color: "#ef4444", width: 2 }},
             fillcolor: "rgba(239,68,68,0.18)",

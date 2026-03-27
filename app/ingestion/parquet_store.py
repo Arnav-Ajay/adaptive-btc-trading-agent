@@ -101,7 +101,11 @@ class ParquetMarketDataStore:
         if not symbol_path.exists():
             return []
 
-        parquet_files = sorted(symbol_path.rglob("*.parquet"))
+        parquet_files = sorted(
+            parquet_file
+            for parquet_file in symbol_path.rglob("*.parquet")
+            if not parquet_file.name.endswith(".tmp.parquet")
+        )
         if not parquet_files:
             return []
 

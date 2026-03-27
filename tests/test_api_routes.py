@@ -39,6 +39,7 @@ def test_trades_page_can_render_backtest_summary() -> None:
     assert "Run Backtest" in response.text
     assert 'name="start"' in response.text
     assert 'name="end"' in response.text
+    assert 'min="2026-01-01T00:00"' in response.text
     assert 'name="fee_pct"' in response.text
     assert 'name="spread_pct"' in response.text
     assert 'name="slippage_pct"' in response.text
@@ -58,12 +59,57 @@ def test_trades_page_can_run_backtest_summary() -> None:
 
 
 def test_trades_page_can_render_simulation_subview() -> None:
-    """Trades page should render the simulation placeholder subview."""
+    """Trades page should render the simulation controls and history rail."""
     client = TestClient(app)
     response = client.get("/trades?mode=simulation")
     assert response.status_code == 200
-    assert "Simulation" in response.text
-    assert "Coming Soon" in response.text
+    assert "Simulation Controls" in response.text
+    assert "Strategy Parameter Sweep" in response.text
+    assert "Simulation History" in response.text
+    assert 'min="2026-01-01T00:00"' in response.text
+
+
+def test_trades_page_can_run_simulation() -> None:
+    """Simulation subview should render ranked sweep results when explicitly requested."""
+    client = TestClient(app)
+    response = client.get(
+        "/trades?mode=simulation&run_simulation=1"
+        "&interval=30m"
+        "&start=2026-03-01T00:00"
+        "&end=2026-03-05T00:00"
+        "&sim_rsi_values=35"
+        "&sim_take_profit_values=2.0"
+        "&sim_no_follow_values=3"
+        "&sim_follow_buffer_values=0.2"
+        "&sim_atr_values=1.5"
+    )
+    assert response.status_code == 200
+    assert "Simulation Results" in response.text
+    assert "Ranked Candidates" in response.text
+    assert "Best Candidate" in response.text
+
+
+def test_trades_page_can_select_saved_simulation_run() -> None:
+    """Simulation history selection should render the explicitly selected saved run."""
+    client = TestClient(app)
+    run_query = (
+        "/trades?mode=simulation&run_simulation=1"
+        "&interval=30m"
+        "&start=2026-03-01T00:00"
+        "&end=2026-03-05T00:00"
+        "&sim_rsi_values=35"
+        "&sim_take_profit_values=2.0"
+        "&sim_no_follow_values=3"
+        "&sim_follow_buffer_values=0.2"
+        "&sim_atr_values=1.5"
+    )
+    assert client.get(run_query).status_code == 200
+    assert client.get(run_query).status_code == 200
+    response = client.get("/trades?mode=simulation&simulation_run_idx=1")
+    assert response.status_code == 200
+    assert "Simulation Results" in response.text
+    assert "Parameter Sweep" in response.text
+    assert "Simulation History" in response.text
 
 
 def test_trades_page_legacy_run_backtest_still_works() -> None:

@@ -19,8 +19,13 @@ class StrategyRouter:
         self.swing = SwingATRStrategy(config=config)
         self.hybrid = HybridStrategy(config=config)
 
-    def select(self, regime: MarketRegime) -> DCAStrategy | SwingATRStrategy | HybridStrategy:
+    def select(
+        self,
+        regime: MarketRegime,
+        bullish_trend: bool = False,
+        has_open_swing_positions: bool = False,
+    ) -> DCAStrategy | SwingATRStrategy | HybridStrategy:
         """Select a strategy for the current market regime."""
-        if regime is MarketRegime.BULLISH:
+        if regime is MarketRegime.BULLISH or bullish_trend or has_open_swing_positions:
             return self.hybrid
         return self.dca

@@ -176,6 +176,7 @@ class AgentContext:
 
     config: AppConfig
     latest_buy_fill_price: float | None = None
+    active_swing_positions: list[SwingPosition] = field(default_factory=list)
     available_cash_usd: float = field(init=False)
 
     def __post_init__(self) -> None:

@@ -176,7 +176,7 @@ Backtest notes:
 - backtests persist the latest run and append to history under `data_lake/state/`
 - backtests can halt early on:
   - max drawdown guard
-  - swing stop-loss trigger
+- swing stop-loss exits now close positions and replay continues afterward
 
 Run the FastAPI dashboard/API:
 
@@ -226,3 +226,4 @@ docker compose up -d --build market-data-ingestor trading-agent dashboard-api
 - [docs/current-flow.md](docs/current-flow.md)
 - [docs/metrics.md](docs/metrics.md)
 - [docs/strategies.md](docs/strategies.md)
+- [docs/strategy-growth.md](docs/strategy-growth.md)

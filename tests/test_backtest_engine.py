@@ -67,3 +67,45 @@ def test_backtest_engine_halts_when_drawdown_limit_is_breached(tmp_path) -> None
     assert result.halted_at is not None
     assert result.steps[-1].decision == "HALT"
 
+
+def test_backtest_engine_continues_after_stop_loss_exit(tmp_path) -> None:
+    """A stop-loss exit should close the position without terminating the replay."""
+    config = load_config()
+    config.data.data_lake_path = str(tmp_path)
+    config.data.min_candles_required = 20
+    config.execution.initial_cash_usd = 1_000.0
+    config.trading.dca_order_size_usd = 0.0
+    config.trading.atr_multiplier = 0.1
+    config.trading.swing_entry_rsi_max = 65.0
+
+    store = ParquetMarketDataStore(str(tmp_path))
+    start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    candles: list[Candle] = []
+    close = 100.0
+    for index in range(60):
+        if index < 40:
+            close += 0.8 if index % 2 == 0 else -0.6
+        elif index == 40:
+            close -= 5.0
+        else:
+            close += 0.5
+        candles.append(
+            Candle(
+                timestamp=start + timedelta(minutes=index),
+                open=close - 0.3,
+                high=close + 0.8,
+                low=close - 0.8,
+                close=close,
+                volume=1.0,
+            )
+        )
+    store.write_candles(symbol="BTC-USD", interval="1m", candles=candles)
+
+    engine = BacktestEngine(config=config)
+    result = engine.run(symbol="BTC-USD", interval="1m")
+
+    stop_indices = [idx for idx, step in enumerate(result.steps) if step.strategy_name == "StopLossExit"]
+    assert stop_indices
+    assert result.halted_reason is None
+    assert len(result.steps) > stop_indices[0] + 1
+

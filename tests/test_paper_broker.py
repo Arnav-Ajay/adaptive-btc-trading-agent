@@ -128,6 +128,38 @@ def test_paper_broker_tracks_realized_pnl_for_closed_swing_trade(tmp_path) -> No
     assert snapshot.total_slippage_cost_usd > 0
 
 
+def test_paper_broker_closes_swing_position_on_strategy_sell_reason(tmp_path) -> None:
+    """Strategy-driven swing exits should close the targeted tracked position."""
+    config = _build_config(tmp_path)
+    broker = PaperBroker(config)
+    buy_result = broker.place_order(
+        OrderRequest(
+            side=TradeSide.BUY,
+            symbol="BTC-USD",
+            size_usd=200.0,
+            price=50_000.0,
+            reason="momentum_atr_setup",
+            stop_loss=49_000.0,
+            strategy_name="SwingATRStrategy",
+        )
+    )
+    assert buy_result.accepted is True
+
+    sell_result = broker.place_order(
+        OrderRequest(
+            side=TradeSide.SELL,
+            symbol="BTC-USD",
+            size_usd=210.0,
+            price=52_500.0,
+            reason=f"swing_take_profit:{buy_result.order_id}",
+            strategy_name="SwingATRStrategy",
+        )
+    )
+    assert sell_result.accepted is True
+    assert sell_result.realized_pnl_usd is not None
+    assert len(broker.active_swing_positions()) == 0
+
+
 def test_latest_buy_price_uses_most_recent_buy_fill_across_strategies(tmp_path) -> None:
     """The latest buy context should reflect the newest buy, even if it was a swing entry."""
     config = _build_config(tmp_path)

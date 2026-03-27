@@ -59,6 +59,32 @@ def _apply_env_overrides(base_config: dict[str, Any], env: dict[str, Any]) -> di
     execution = dict(base_config.get("execution", {}))
 
     trading["symbol"] = env.get("TRADING_SYMBOL", trading.get("symbol", "BTC-USD"))
+    trading["dca_drop_percent"] = float(env.get("DCA_DROP_PERCENT", trading.get("dca_drop_percent", 3.0)))
+    trading["dca_order_size_usd"] = float(
+        env.get("DCA_ORDER_SIZE_USD", trading.get("dca_order_size_usd", 100.0))
+    )
+    trading["atr_multiplier"] = float(env.get("ATR_MULTIPLIER", trading.get("atr_multiplier", 2.0)))
+    trading["swing_entry_rsi_max"] = float(
+        env.get("SWING_ENTRY_RSI_MAX", trading.get("swing_entry_rsi_max", 35.0))
+    )
+    trading["swing_take_profit_percent"] = float(
+        env.get("SWING_TAKE_PROFIT_PERCENT", trading.get("swing_take_profit_percent", 2.0))
+    )
+    trading["swing_no_follow_through_candles"] = int(
+        env.get(
+            "SWING_NO_FOLLOW_THROUGH_CANDLES",
+            trading.get("swing_no_follow_through_candles", 3),
+        )
+    )
+    trading["swing_follow_through_buffer_percent"] = float(
+        env.get(
+            "SWING_FOLLOW_THROUGH_BUFFER_PERCENT",
+            trading.get("swing_follow_through_buffer_percent", 0.2),
+        )
+    )
+    trading["max_drawdown_percent"] = float(
+        env.get("MAX_DRAWDOWN_PERCENT", trading.get("max_drawdown_percent", 25.0))
+    )
 
     data["data_lake_path"] = env.get("DATA_LAKE_PATH", data.get("data_lake_path", "data_lake"))
     data["trading_lookback"] = int(env.get("TRADING_LOOKBACK", data.get("trading_lookback", 500)))

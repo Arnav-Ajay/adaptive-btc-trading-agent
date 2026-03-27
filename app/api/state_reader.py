@@ -9,6 +9,7 @@ from typing import Any
 from app.backtest.history import latest_backtest_path, load_backtest_history
 from app.config.schema import AppConfig
 from app.data.parquet_market_data import ParquetMarketDataClient
+from app.simulation.history import latest_simulation_path, load_simulation_history
 
 
 def _load_json(path: Path) -> dict[str, Any] | None:
@@ -46,6 +47,8 @@ def load_dashboard_state(
     include_candles: bool = True,
     candle_intervals: list[str] | None = None,
     candle_limit: int | None = None,
+    include_backtests: bool = True,
+    include_simulations: bool = True,
 ) -> dict[str, Any]:
     """Load the latest ingestion and trading artifacts for the dashboard."""
     ingestion_state = _load_json(Path(config.ingestion.state_path))
@@ -55,10 +58,12 @@ def load_dashboard_state(
     latest_cycle = _load_latest_jsonl(Path(config.execution.paper_cycle_log_path))
     latest_trace = _load_latest_jsonl(Path(config.execution.paper_decision_trace_path))
     latest_trade = _load_latest_jsonl(Path(config.execution.paper_trade_log_path))
-    latest_backtest = _load_json(latest_backtest_path(config.data.data_lake_path))
+    latest_backtest = _load_json(latest_backtest_path(config.data.data_lake_path)) if include_backtests else None
+    latest_simulation = _load_json(latest_simulation_path(config.data.data_lake_path)) if include_simulations else None
     recent_trades = _load_jsonl_records(Path(config.execution.paper_trade_log_path), limit=25)
     recent_cycles = _load_jsonl_records(Path(config.execution.paper_cycle_log_path), limit=50)
-    recent_backtests = load_backtest_history(config.data.data_lake_path, limit=10)
+    recent_backtests = load_backtest_history(config.data.data_lake_path, limit=10) if include_backtests else []
+    recent_simulations = load_simulation_history(config.data.data_lake_path, limit=10) if include_simulations else []
     recent_candles: list[dict[str, Any]] = []
     chart_candles: dict[str, list[dict[str, Any]]] = {}
     if include_candles:
@@ -90,9 +95,11 @@ def load_dashboard_state(
         "latest_trace": latest_trace,
         "latest_trade": latest_trade,
         "latest_backtest": latest_backtest,
+        "latest_simulation": latest_simulation,
         "recent_trades": recent_trades,
         "recent_cycles": recent_cycles,
         "recent_backtests": recent_backtests,
+        "recent_simulations": recent_simulations,
         "recent_candles": recent_candles,
         "chart_candles": chart_candles,
     }

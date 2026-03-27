@@ -141,7 +141,7 @@ class PaperBroker(BrokerInterface):
                     self.state.dca_btc_units = 0.0
                     self.state.dca_avg_entry_price = 0.0
             else:
-                position = self._remove_swing_position(order_id=order.reason.removeprefix("stop_loss_hit:") if order.reason.startswith("stop_loss_hit:") else "")
+                position = self._remove_swing_position(order_id=self._swing_position_id_from_reason(order.reason))
                 if position:
                     entry_cost = float(position.get("size_usd", 0.0))
                     realized_pnl_usd = execution.cash_flow_usd - entry_cost
@@ -375,10 +375,18 @@ class PaperBroker(BrokerInterface):
         strategy_name = self._resolve_strategy_name(order)
         if strategy_name == "DCAStrategy":
             return btc_units <= self.state.dca_btc_units
-        if order.reason.startswith("stop_loss_hit:"):
-            position_id = order.reason.removeprefix("stop_loss_hit:")
+        position_id = self._swing_position_id_from_reason(order.reason)
+        if position_id:
             return any(str(position.get("position_id", "")) == position_id for position in self.state.open_swing_positions)
         return btc_units <= sum(float(position["btc_units"]) for position in self.state.open_swing_positions)
+
+    @staticmethod
+    def _swing_position_id_from_reason(reason: str) -> str:
+        """Extract a tracked swing position id from a sell reason, when present."""
+        for prefix in ("stop_loss_hit:", "swing_take_profit:", "swing_signal_exit:", "swing_no_follow_through:"):
+            if reason.startswith(prefix):
+                return reason.removeprefix(prefix)
+        return ""
 
     @staticmethod
     def _resolve_strategy_name(order: OrderRequest) -> str:

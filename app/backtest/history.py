@@ -55,7 +55,14 @@ def save_backtest_result(data_lake_path: str, result: BacktestResult) -> dict[st
     latest_path = latest_backtest_path(data_lake_path)
     temp_path = latest_path.with_suffix(".tmp")
     temp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    temp_path.replace(latest_path)
+    try:
+        temp_path.replace(latest_path)
+    except PermissionError:
+        try:
+            latest_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            temp_path.unlink(missing_ok=True)
+        except PermissionError:
+            temp_path.unlink(missing_ok=True)
 
     history_path = backtest_history_path(data_lake_path)
     with history_path.open("a", encoding="utf-8") as handle:

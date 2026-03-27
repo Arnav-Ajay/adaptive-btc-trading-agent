@@ -46,3 +46,17 @@ def test_router_uses_dca_strategy_outside_bullish_regime() -> None:
     router = StrategyRouter(config=_build_config())
     strategy = router.select(MarketRegime.BEARISH)
     assert isinstance(strategy, DCAStrategy)
+
+
+def test_router_keeps_hybrid_strategy_active_when_swing_positions_exist() -> None:
+    """Open swing positions should keep the swing exit path available in non-bullish regimes."""
+    router = StrategyRouter(config=_build_config())
+    strategy = router.select(MarketRegime.BEARISH, has_open_swing_positions=True)
+    assert isinstance(strategy, HybridStrategy)
+
+
+def test_router_uses_hybrid_strategy_for_bullish_trend_even_if_regime_is_not_bullish() -> None:
+    """A bullish EMA trend should keep the hybrid swing layer available."""
+    router = StrategyRouter(config=_build_config())
+    strategy = router.select(MarketRegime.SIDEWAYS, bullish_trend=True)
+    assert isinstance(strategy, HybridStrategy)

@@ -82,8 +82,13 @@ def run_cycle(config: AppConfig | None = None) -> None:
         return
     context.available_cash_usd = snapshot.cash_usd
     context.latest_buy_fill_price = order_manager.broker.latest_buy_price()
+    context.active_swing_positions = order_manager.broker.active_swing_positions()
     regime = market_data_service.detect_regime(features)
-    strategy = router.select(regime)
+    strategy = router.select(
+        regime,
+        bullish_trend=features.ema_fast > features.ema_slow,
+        has_open_swing_positions=bool(context.active_swing_positions),
+    )
     strategy_outcome = strategy.generate(context=context, candles=candles, features=features)
     logger.info(
         "Cycle indicators: candles=%s last_ts=%s last_price=%.2f atr=%.2f rsi=%.2f ema_fast=%.2f ema_slow=%.2f macd=%.4f macd_signal=%.4f macd_histogram=%.4f regime=%s strategy=%s",

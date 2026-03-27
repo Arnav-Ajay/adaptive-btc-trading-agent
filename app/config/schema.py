@@ -15,6 +15,10 @@ class TradingConfig:
     dca_drop_percent: float = 3.0
     dca_order_size_usd: float = 100.0
     atr_multiplier: float = 2.0
+    swing_entry_rsi_max: float = 35.0
+    swing_take_profit_percent: float = 2.0
+    swing_no_follow_through_candles: int = 3
+    swing_follow_through_buffer_percent: float = 0.2
     max_drawdown_percent: float = 25.0
 
 

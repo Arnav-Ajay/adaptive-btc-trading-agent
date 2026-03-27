@@ -152,9 +152,7 @@ class BacktestEngine:
                         ),
                     }
                 )
-                halted_reason = "stop_loss_triggered"
-                halted_at = timestamp
-                break
+                continue
 
             if order_manager.guard.trading_paused(snapshot):
                 steps.append(
@@ -199,9 +197,14 @@ class BacktestEngine:
             context = AgentContext(config=isolated_config)
             context.available_cash_usd = snapshot.cash_usd
             context.latest_buy_fill_price = order_manager.broker.latest_buy_price()
+            context.active_swing_positions = order_manager.broker.active_swing_positions()
 
             regime = detect_market_regime(features)
-            strategy = router.select(regime)
+            strategy = router.select(
+                regime,
+                bullish_trend=features.ema_fast > features.ema_slow,
+                has_open_swing_positions=bool(context.active_swing_positions),
+            )
             outcome = strategy.generate(context=context, candles=window, features=features)
             signals = order_manager.review_signals(outcome.signals, features=features, regime=regime)
             execution_results = [*stop_results, *order_manager.execute(signals)]
