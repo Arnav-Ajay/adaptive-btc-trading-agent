@@ -892,7 +892,18 @@ def index() -> RedirectResponse:
 def bitcoin_page() -> str:
     """Render the Bitcoin market dashboard."""
     config = load_config()
-    state = load_dashboard_state(config)
+    state = load_dashboard_state(
+        config,
+        candle_intervals=["1m", "10m", "30m", "1month"],
+        candle_limits_by_interval={
+            "1m": 60,
+            "10m": 48,
+            "30m": 48,
+            "1month": None,
+        },
+        include_backtests=False,
+        include_simulations=False,
+    )
     ingestion = state["ingestion_state"] or {}
     latest_cycle = state["latest_cycle"] or {}
     portfolio = (state["portfolio_snapshot"] or {}).get("snapshot", {})
@@ -1058,7 +1069,7 @@ def bitcoin_page() -> str:
         if (range === "60") return "1m";
         if (range === "240" || range === "480") return "10m";
         if (range === "1440") return "30m";
-        if (range === "all") return "1d";
+        if (range === "all") return "1month";
         return "1m";
       }}
 
@@ -1089,6 +1100,7 @@ def bitcoin_page() -> str:
           "10m": "10m",
           "30m": "30m",
           "1d": "1d",
+          "1month": "1mo",
         }};
         const intervalLabel = labelMap[interval] || interval;
         if (chartNote) {{
@@ -1803,20 +1815,6 @@ def trades_page(
         </section>
     """
     backtest_payload = ""
-    backtest_history_rows = (
-        "".join(
-            "<tr>"
-            f"<td>{escape(_format_display_timestamp(str(run.get('recorded_at', ''))))}</td>"
-            f"<td>{escape(str(run.get('interval', 'n/a')))}</td>"
-            f"<td>{float((run.get('metrics') or {}).get('total_return_percent', 0.0)):+.2f}%</td>"
-            f"<td>{float((run.get('metrics') or {}).get('max_drawdown_percent', 0.0)):.2f}%</td>"
-            f"<td>{int((run.get('metrics') or {}).get('filled_trade_count', 0))}</td>"
-            "</tr>"
-            for run in reversed(state.get("recent_backtests", []))
-        )
-        if state.get("recent_backtests")
-        else "<tr><td class='empty' colspan='5'>No saved backtest runs yet.</td></tr>"
-    )
     if view_mode == "backtest" and run_backtest:
         try:
             start_at, end_at = normalized_start, normalized_end

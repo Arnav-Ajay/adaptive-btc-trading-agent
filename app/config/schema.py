@@ -56,7 +56,6 @@ class RuntimeConfig:
     loop_interval_seconds: int = 60
     max_cycles: int | None = 1
     schedule_minutes: int = 30
-    decision_offset_minutes: int = 2
     health_max_staleness_minutes: int = 95
 
 

@@ -1,15 +1,14 @@
 # adaptive-btc-trading-agent
 
-This repository currently runs three working services:
+This repository currently runs two working services:
 
-- a scheduled Coinbase market-data ingestor
-- a scheduled local-data paper-trading runtime
+- a combined market-execution worker that ingests market data and then runs trading sequentially
 - a FastAPI dashboard/API over the stored runtime state
 
 ## What Works
 
 - Coinbase `BTC-USD` candle ingestion
-- 30-minute APScheduler ingestion cadence
+- exact 30-minute worker cadence aligned to UTC half-hour boundaries
 - overlapping-window fetch with parquet deduplication
 - derived interval preprocessing from canonical `1m` candles:
   - `10m`
@@ -50,6 +49,7 @@ This repository currently runs three working services:
   - filled trade count
   - closed swing trade win rate
 - saved backtest history and replay-step decision traces
+- saved simulation history and ranked parameter sweeps
 - FastAPI UI/API with:
   - Bitcoin market page
   - Trades page with:
@@ -57,7 +57,7 @@ This repository currently runs three working services:
     - Backtest
     - Simulation subviews
   - JSON endpoints
-- Dockerized ingestor, trading, and dashboard services with healthchecks
+- Dockerized worker and dashboard services with healthchecks
 
 ## Data Layout
 
@@ -83,6 +83,8 @@ data_lake/
     paper_decision_trace.jsonl
     backtest_latest.json
     backtest_history.jsonl
+    simulation_latest.json
+    simulation_history.jsonl
 
 logs/
   ingestion/
@@ -132,15 +134,9 @@ docker compose up -d
 
 Notes:
 
-- Yes, backfill-first is valid now. The backfill writes the main ingestion state file, so the ingestor healthcheck will see that bootstrap history.
+- Yes, backfill-first is valid now. The backfill writes the main ingestion state file, so the worker healthcheck will see that bootstrap history.
 - On Windows, run large local backfills with the Docker stack stopped. The parquet writer uses atomic file replacement, and open file handles from running containers can cause `PermissionError` during bulk backfill.
-- If you skip backfill entirely, the ingestor now performs an immediate bootstrap collection on first startup instead of waiting for the next 30-minute boundary.
-
-Run the ingestor:
-
-```bash
-python -m app.scheduler.collector_runner
-```
+- If you skip backfill entirely, the worker now performs an immediate bootstrap ingestion/trading cycle on first startup instead of waiting for the next 30-minute boundary.
 
 Run a one-shot trading cycle:
 
@@ -148,10 +144,10 @@ Run a one-shot trading cycle:
 python -m app.main
 ```
 
-Run the scheduled trading service:
+Run the combined scheduled worker:
 
 ```bash
-python -m app.scheduler.trading_runner
+python -m app.scheduler.worker_runner
 ```
 
 Run a backfill:
@@ -196,14 +192,13 @@ http://127.0.0.1:8000/trades
 Start all services:
 
 ```bash
-docker compose up -d --build market-data-ingestor trading-agent dashboard-api
+docker compose up -d --build market-execution-worker dashboard-api
 ```
 
 Watch logs:
 
 ```bash
-docker compose logs -f market-data-ingestor
-docker compose logs -f trading-agent
+docker compose logs -f market-execution-worker
 docker compose logs -f dashboard-api
 ```
 
@@ -218,7 +213,7 @@ Safe Windows backfill workflow:
 ```bash
 docker compose down
 python -m app.ingestion.backfill --start 2026-01-01T00:00:00Z
-docker compose up -d --build market-data-ingestor trading-agent dashboard-api
+docker compose up -d --build market-execution-worker dashboard-api
 ```
 
 ## Current Docs

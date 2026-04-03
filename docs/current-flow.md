@@ -2,18 +2,24 @@
 
 This document describes only the flows that are currently implemented and verified.
 
-## 1. Scheduled Ingestion Flow
+## 1. Combined Market-Execution Worker
 
-Entry point: [app/scheduler/collector_runner.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/scheduler/collector_runner.py)
+Entry point: [app/scheduler/worker_runner.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/scheduler/worker_runner.py)
 
 ```text
 Load config
--> configure ingestion logging
--> if no ingestion state and no canonical data exist, queue an immediate bootstrap collection
+-> configure worker logging
+-> if no ingestion state and no canonical data exist, queue an immediate bootstrap worker cycle
 -> compute next aligned 30-minute boundary
--> start APScheduler
--> trigger CoinbaseIngestionService.collect_once()
+-> sleep until that exact boundary
+-> run one worker cycle:
+   -> CoinbaseIngestionService.collect_once()
+   -> run_cycle()
 ```
+
+The worker is time-aligned only on the ingestion boundary. Trading no longer has a separate scheduler or offset. It runs immediately after a completed ingestion cycle.
+
+## 2. Ingestion Flow
 
 Collection flow: [app/ingestion/collector.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/ingestion/collector.py)
 
@@ -46,39 +52,20 @@ Derived intervals currently written:
 - `1week`
 - `1month`
 
-State and health:
+Ingestion state and health:
 
 - ingestion state: [data_lake/state/coinbase_btc_usd_1m.json](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/coinbase_btc_usd_1m.json)
 - ingestion gap audit: [data_lake/state/ingestion_gap_audit.json](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/ingestion_gap_audit.json)
 - ingestion gap events: [data_lake/state/ingestion_gap_events.jsonl](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/ingestion_gap_events.jsonl)
-- ingestion healthcheck: [app/scheduler/healthcheck.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/scheduler/healthcheck.py)
+- worker healthcheck combines ingestion freshness and trading freshness: [app/scheduler/worker_healthcheck.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/scheduler/worker_healthcheck.py)
 - ingestion log: [logs/ingestion/ingestion.log](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/logs/ingestion/ingestion.log)
 
-## 2. Backfill Flow
-
-Entry point: [app/ingestion/backfill.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/ingestion/backfill.py)
-
-```text
-Read start/end arguments
--> fetch historical windows from Coinbase within API limits
--> write canonical 1m parquet data
--> build the same derived intervals
--> update the main ingestion state file
-```
-
-Backfill notes:
-
-- backfill updates [data_lake/state/coinbase_btc_usd_1m.json](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/coinbase_btc_usd_1m.json), so ingestion healthchecks and clean bootstrap runs see the restored history
-- on Windows, large local backfills should be run with the Docker stack stopped to avoid parquet file-replace conflicts while containers are reading from the lake
-
-## 3. Scheduled Paper-Trading Flow
-
-Scheduler entry point: [app/scheduler/trading_runner.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/scheduler/trading_runner.py)
+## 3. Sequential Paper-Trading Flow
 
 One-shot entry point: [app/main.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/main.py)
 
 ```text
-Load config
+After the worker completes ingestion:
 -> read recent candles from local parquet data lake
 -> validate candle freshness and minimum history
 -> compute ATR / RSI / EMA / MACD
@@ -129,9 +116,26 @@ Paper-trading accounting:
 
 Trading health:
 
-- [app/scheduler/trading_healthcheck.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/scheduler/trading_healthcheck.py)
+- the worker freshness check uses the latest cycle timestamp via [app/scheduler/trading_healthcheck.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/scheduler/trading_healthcheck.py)
 
-## 4. Dashboard/API Flow
+## 4. Backfill Flow
+
+Entry point: [app/ingestion/backfill.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/ingestion/backfill.py)
+
+```text
+Read start/end arguments
+-> fetch historical windows from Coinbase within API limits
+-> write canonical 1m parquet data
+-> build the same derived intervals
+-> update the main ingestion state file
+```
+
+Backfill notes:
+
+- backfill updates [data_lake/state/coinbase_btc_usd_1m.json](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/coinbase_btc_usd_1m.json), so worker healthchecks and clean bootstrap runs see the restored history
+- on Windows, large local backfills should be run with the Docker stack stopped to avoid parquet file-replace conflicts while containers are reading from the lake
+
+## 5. Dashboard/API Flow
 
 API entry point: [app/api/main.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/api/main.py)
 
@@ -142,13 +146,14 @@ State loader:
 ```text
 Read ingestion state
 -> read trading state and ledger files
--> read saved backtest history and latest saved backtest
--> load chart candles from local parquet
+-> read saved backtest history and latest saved backtest when needed
+-> read saved simulation history and latest saved simulation when needed
+-> load chart candles from local parquet when needed
 -> render Bitcoin page
 -> render Trades page subviews:
    - Paper
    - Backtest
-   - Simulation placeholder
+   - Simulation
 -> expose JSON health/state endpoints
 ```
 
@@ -167,7 +172,7 @@ Current JSON endpoints:
 - `/api/trades`
 - `/api/backtest`
 
-## 5. Backtest Flow
+## 6. Backtest Flow
 
 Entry point: [app/backtest/engine.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/backtest/engine.py)
 
@@ -176,7 +181,6 @@ Load historical candles from parquet
 -> replay candles sequentially from minimum-history threshold onward
 -> compute the same indicators used by the live trading runtime
 -> evaluate open swing stop-losses
--> stop early if swing stop-loss exits fire
 -> run the same regime and strategy path
 -> stop early if the portfolio drawdown guard is breached
 -> execute on an isolated paper broker state
@@ -199,12 +203,33 @@ Saved backtest artifacts:
 - latest run: [data_lake/state/backtest_latest.json](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/backtest_latest.json)
 - run history: [data_lake/state/backtest_history.jsonl](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/backtest_history.jsonl)
 
-## 6. Runtime Boundaries
+## 7. Simulation Flow
+
+Entry point: [app/simulation/engine.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/simulation/engine.py)
+
+```text
+Load a bounded parameter grid
+-> clone the current config for each candidate
+-> run backtests for each parameter set
+-> rank candidates by:
+   - return
+   - drawdown
+   - profit factor
+   - Sharpe
+-> persist latest sweep and append to simulation history
+```
+
+Saved simulation artifacts:
+
+- latest run: [data_lake/state/simulation_latest.json](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/simulation_latest.json)
+- run history: [data_lake/state/simulation_history.jsonl](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/simulation_history.jsonl)
+
+## 8. Runtime Boundaries
 
 The current separation is:
 
-- the ingestor is the only runtime that talks to Coinbase for market data
-- the trading runtime reads only from the local parquet lake
+- the combined worker is the only runtime that talks to Coinbase for market data
+- the trading cycle runs only after a completed ingestion cycle inside that same worker
 - preprocessing derives larger intervals from canonical `1m` candles
 - the dashboard reads only persisted files and parquet data
-- `data_lake/`, `config/`, and `logs/` are shared between containers
+- `data_lake/`, `config/`, and `logs/` are shared between the worker and dashboard containers

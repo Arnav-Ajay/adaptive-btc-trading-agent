@@ -47,6 +47,7 @@ def load_dashboard_state(
     include_candles: bool = True,
     candle_intervals: list[str] | None = None,
     candle_limit: int | None = None,
+    candle_limits_by_interval: dict[str, int | None] | None = None,
     include_backtests: bool = True,
     include_simulations: bool = True,
 ) -> dict[str, Any]:
@@ -68,7 +69,7 @@ def load_dashboard_state(
     chart_candles: dict[str, list[dict[str, Any]]] = {}
     if include_candles:
         client = ParquetMarketDataClient(config=config)
-        intervals = candle_intervals or ["1m", "10m", "30m", "1d"]
+        intervals = candle_intervals or ["1m", "10m", "30m", "1d", "1month"]
 
         def serialize(candles):
             return [
@@ -83,7 +84,8 @@ def load_dashboard_state(
                 for candle in candles
             ]
         for interval in intervals:
-            chart_candles[interval] = serialize(client.fetch_dashboard_candles(interval=interval, limit=candle_limit))
+            interval_limit = candle_limits_by_interval.get(interval) if candle_limits_by_interval else candle_limit
+            chart_candles[interval] = serialize(client.fetch_dashboard_candles(interval=interval, limit=interval_limit))
         recent_candles = chart_candles.get("1m", [])
 
     return {

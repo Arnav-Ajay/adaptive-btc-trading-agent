@@ -4,8 +4,9 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ from app.utils.models import Candle
 
 
 logger = logging.getLogger(__name__)
+_PARTITION_VALUE_RE = re.compile(r"^[^=]+=([0-9]+)$")
 
 
 @dataclass(slots=True)
@@ -101,16 +103,15 @@ class ParquetMarketDataStore:
         if not symbol_path.exists():
             return []
 
-        parquet_files = sorted(
-            parquet_file
-            for parquet_file in symbol_path.rglob("*.parquet")
-            if not parquet_file.name.endswith(".tmp.parquet")
-        )
+        if limit is not None:
+            parquet_files = self._recent_partition_files(symbol=symbol, interval=interval, limit=limit)
+        else:
+            parquet_files = list(self._iter_partition_files_reverse(symbol_path))
         if not parquet_files:
             return []
 
         frames: list[pd.DataFrame] = []
-        for parquet_file in reversed(parquet_files):
+        for parquet_file in parquet_files:
             frames.append(pd.read_parquet(parquet_file))
             combined_rows = sum(len(frame.index) for frame in frames)
             if limit is not None and combined_rows >= limit:
@@ -132,6 +133,61 @@ class ParquetMarketDataStore:
                 )
             )
         return candles
+
+    def _recent_partition_files(self, symbol: str, interval: str, limit: int) -> list[Path]:
+        """Return likely-recent partition files without scanning the whole interval tree."""
+        interval_rows_per_day = {
+            "1m": 1440,
+            "10m": 144,
+            "30m": 48,
+            "1hr": 24,
+            "1d": 1,
+        }
+        rows_per_day = interval_rows_per_day.get(interval)
+        if rows_per_day is None:
+            return list(self._iter_partition_files_reverse(self.root_path / f"symbol={symbol}" / f"interval={interval}"))
+
+        estimated_days = max(3, (limit + rows_per_day - 1) // rows_per_day + 2)
+        files: list[Path] = []
+        current_day = datetime.now(UTC).date()
+        for offset in range(estimated_days):
+            candidate_day = current_day - timedelta(days=offset)
+            parquet_file = self._partition_file_path(
+                symbol=symbol,
+                interval=interval,
+                year=candidate_day.year,
+                month=candidate_day.month,
+                day=candidate_day.day,
+            )
+            if parquet_file.exists():
+                files.append(parquet_file)
+        if files:
+            return files
+        return list(self._iter_partition_files_reverse(self.root_path / f"symbol={symbol}" / f"interval={interval}"))
+
+    def _iter_partition_files_reverse(self, interval_path: Path) -> list[Path]:
+        """Return partition parquet files ordered from newest to oldest."""
+        files: list[Path] = []
+        for year_dir in self._sorted_partition_dirs(interval_path):
+            for month_dir in self._sorted_partition_dirs(year_dir):
+                for day_dir in self._sorted_partition_dirs(month_dir):
+                    parquet_file = day_dir / "data.parquet"
+                    if parquet_file.exists():
+                        files.append(parquet_file)
+        return files
+
+    def _sorted_partition_dirs(self, root: Path) -> list[Path]:
+        """Sort partition directories in descending numeric partition order."""
+        partition_dirs = [path for path in root.iterdir() if path.is_dir()]
+        return sorted(partition_dirs, key=self._partition_sort_key, reverse=True)
+
+    @staticmethod
+    def _partition_sort_key(path: Path) -> int:
+        """Extract the numeric suffix from partition directory names like year=2026."""
+        match = _PARTITION_VALUE_RE.match(path.name)
+        if match is None:
+            return -1
+        return int(match.group(1))
 
     def _partition_file_path(self, symbol: str, interval: str, year: int, month: int, day: int) -> Path:
         """Build the partition file path for a given date."""

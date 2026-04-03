@@ -1,24 +1,22 @@
 services:
-  trading-agent:
+  market-execution-worker:
     build: .
-    container_name: adaptive-btc-trading-agent
+    container_name: adaptive-btc-market-execution-worker
     restart: unless-stopped
-    command: ["python", "-m", "app.scheduler.trading_runner"]
+    command: ["python", "-m", "app.scheduler.worker_runner"]
     env_file:
       - .env
-    depends_on:
-      market-data-ingestor:
-        condition: service_healthy
     volumes:
       - ./logs:/app/logs
       - ./config:/app/config
       - ./data_lake:/app/data_lake
     healthcheck:
-      test: ["CMD", "python", "-m", "app.scheduler.trading_healthcheck"]
+      test: ["CMD", "python", "-m", "app.scheduler.worker_healthcheck"]
       interval: 5m
       timeout: 15s
       retries: 3
       start_period: 5m
+
   dashboard-api:
     build: .
     container_name: adaptive-btc-dashboard-api
@@ -38,20 +36,3 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
-  market-data-ingestor:
-    build: .
-    container_name: adaptive-btc-market-data-ingestor
-    restart: unless-stopped
-    command: ["python", "-m", "app.scheduler.collector_runner"]
-    env_file:
-      - .env
-    volumes:
-      - ./logs:/app/logs
-      - ./config:/app/config
-      - ./data_lake:/app/data_lake
-    healthcheck:
-      test: ["CMD", "python", "-m", "app.scheduler.healthcheck"]
-      interval: 5m
-      timeout: 15s
-      retries: 3
-      start_period: 2m

@@ -33,7 +33,6 @@
     "loop_interval_seconds": 60,
     "max_cycles": 1,
     "schedule_minutes": 30,
-    "decision_offset_minutes": 2,
     "health_max_staleness_minutes": 95
   },
   "logging": {

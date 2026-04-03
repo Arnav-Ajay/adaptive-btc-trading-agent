@@ -133,9 +133,6 @@ def _apply_env_overrides(base_config: dict[str, Any], env: dict[str, Any]) -> di
     runtime["schedule_minutes"] = int(
         env.get("RUNTIME_SCHEDULE_MINUTES", runtime.get("schedule_minutes", 30))
     )
-    runtime["decision_offset_minutes"] = int(
-        env.get("RUNTIME_DECISION_OFFSET_MINUTES", runtime.get("decision_offset_minutes", 2))
-    )
     runtime["health_max_staleness_minutes"] = int(
         env.get(
             "RUNTIME_HEALTH_MAX_STALENESS_MINUTES",

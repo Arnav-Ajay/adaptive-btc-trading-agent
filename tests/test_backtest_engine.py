@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pytest import approx
 
 from app.backtest.engine import BacktestEngine
 from app.config.settings import load_config
@@ -40,10 +41,11 @@ def test_backtest_engine_replays_parquet_history(tmp_path) -> None:
     result = engine.run(symbol="BTC-USD", interval="1m")
 
     assert result.candles_processed == 120
-    assert result.start_at == "2026-01-01T00:00:00+00:00"
+    assert result.start_at == "2026-01-01T00:19:00+00:00"
     assert result.end_at == "2026-01-01T01:59:00+00:00"
     assert len(result.steps) == 101
     assert len(result.equity_curve) == 101
+    assert result.benchmark_curve[0]["equity_usd"] == approx(config.execution.initial_cash_usd)
     assert result.metrics.filled_trade_count >= 1
     assert result.final_snapshot.cash_usd < config.execution.initial_cash_usd
 

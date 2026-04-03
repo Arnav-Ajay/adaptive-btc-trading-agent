@@ -98,6 +98,9 @@ class BacktestEngine:
         isolated_config = self._isolated_config()
         router = StrategyRouter(config=isolated_config)
         order_manager = OrderManager(config=isolated_config)
+        replay_start_index = self.config.data.min_candles_required - 1
+        replay_start_candle = candles[replay_start_index]
+        benchmark_initial_price = replay_start_candle.close
 
         steps: list[BacktestStep] = []
         equity_curve: list[dict[str, object]] = []
@@ -147,7 +150,7 @@ class BacktestEngine:
                         "timestamp": timestamp,
                         "equity_usd": self._buy_hold_equity(
                             initial_cash=isolated_config.execution.initial_cash_usd,
-                            initial_price=candles[0].close,
+                            initial_price=benchmark_initial_price,
                             current_price=window[-1].close,
                         ),
                     }
@@ -185,7 +188,7 @@ class BacktestEngine:
                         "timestamp": timestamp,
                         "equity_usd": self._buy_hold_equity(
                             initial_cash=isolated_config.execution.initial_cash_usd,
-                            initial_price=candles[0].close,
+                            initial_price=benchmark_initial_price,
                             current_price=window[-1].close,
                         ),
                     }
@@ -242,7 +245,7 @@ class BacktestEngine:
                     "timestamp": timestamp,
                     "equity_usd": self._buy_hold_equity(
                         initial_cash=isolated_config.execution.initial_cash_usd,
-                        initial_price=candles[0].close,
+                        initial_price=benchmark_initial_price,
                         current_price=window[-1].close,
                     ),
                 }
@@ -257,7 +260,8 @@ class BacktestEngine:
         ]
         metrics = self._build_metrics(
             interval=interval,
-            candles=candles,
+            benchmark_initial_price=benchmark_initial_price,
+            benchmark_final_price=candles[-1].close,
             equity_curve=[point["equity_usd"] for point in equity_curve],
             initial_cash=isolated_config.execution.initial_cash_usd,
             trades=trades,
@@ -266,7 +270,7 @@ class BacktestEngine:
         return BacktestResult(
             symbol=symbol,
             interval=interval,
-            start_at=candles[0].timestamp.replace(microsecond=0).isoformat(),
+            start_at=replay_start_candle.timestamp.replace(microsecond=0).isoformat(),
             end_at=candles[-1].timestamp.replace(microsecond=0).isoformat(),
             candles_processed=len(candles),
             metrics=metrics,
@@ -308,7 +312,8 @@ class BacktestEngine:
     def _build_metrics(
         self,
         interval: str,
-        candles: list[Candle],
+        benchmark_initial_price: float,
+        benchmark_final_price: float,
         equity_curve: list[float],
         initial_cash: float,
         trades: list[dict[str, object]],
@@ -316,8 +321,8 @@ class BacktestEngine:
         final_equity = equity_curve[-1] if equity_curve else initial_cash
         total_return_percent = 0.0 if initial_cash == 0 else ((final_equity - initial_cash) / initial_cash) * 100
         buy_hold_return_percent = compute_buy_and_hold_return_percent(
-            initial_price=candles[0].close,
-            final_price=candles[-1].close,
+            initial_price=benchmark_initial_price,
+            final_price=benchmark_final_price,
         )
         max_drawdown_percent = compute_max_drawdown_percent(equity_curve)
         sharpe_ratio = compute_sharpe_ratio(
