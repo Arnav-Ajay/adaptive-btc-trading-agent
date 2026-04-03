@@ -39,7 +39,7 @@ def test_trades_page_can_render_backtest_summary() -> None:
     assert "Run Backtest" in response.text
     assert 'name="start"' in response.text
     assert 'name="end"' in response.text
-    assert 'min="2026-01-01T00:00"' in response.text
+    assert 'min="2025-01-01T00:00"' in response.text
     assert 'name="fee_pct"' in response.text
     assert 'name="spread_pct"' in response.text
     assert 'name="slippage_pct"' in response.text
@@ -66,7 +66,7 @@ def test_trades_page_can_render_simulation_subview() -> None:
     assert "Simulation Controls" in response.text
     assert "Strategy Parameter Sweep" in response.text
     assert "Simulation History" in response.text
-    assert 'min="2026-01-01T00:00"' in response.text
+    assert 'min="2025-01-01T00:00"' in response.text
 
 
 def test_trades_page_can_run_simulation() -> None:

@@ -12,7 +12,7 @@ from app.simulation.engine import SimulationCandidate, SimulationResult
 
 
 def _state_dir(data_lake_path: str) -> Path:
-    return Path(data_lake_path) / "state"
+    return Path(data_lake_path) / "state" / "simulations"
 
 
 def latest_simulation_path(data_lake_path: str) -> Path:

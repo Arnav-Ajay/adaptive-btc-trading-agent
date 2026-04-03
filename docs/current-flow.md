@@ -4,7 +4,7 @@ This document describes only the flows that are currently implemented and verifi
 
 ## 1. Combined Market-Execution Worker
 
-Entry point: [app/scheduler/worker_runner.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/scheduler/worker_runner.py)
+Entry point: [app/scheduler/worker_runner.py](../app/scheduler/worker_runner.py)
 
 ```text
 Load config
@@ -21,7 +21,7 @@ The worker is time-aligned only on the ingestion boundary. Trading no longer has
 
 ## 2. Ingestion Flow
 
-Collection flow: [app/ingestion/collector.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/ingestion/collector.py)
+Collection flow: [app/ingestion/collector.py](../app/ingestion/collector.py)
 
 ```text
 Fetch overlapping BTC-USD 1m candles from Coinbase
@@ -40,8 +40,13 @@ Fetch overlapping BTC-USD 1m candles from Coinbase
 
 Storage and preprocessing:
 
-- parquet storage: [app/ingestion/parquet_store.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/ingestion/parquet_store.py)
-- derived interval builder: [app/ingestion/preprocessor.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/ingestion/preprocessor.py)
+- parquet storage: [app/ingestion/parquet_store.py](../app/ingestion/parquet_store.py)
+- derived interval builder: [app/ingestion/preprocessor.py](../app/ingestion/preprocessor.py)
+- partition layout by interval:
+  - intraday (`1m`, `10m`, `30m`, `1hr`) -> `year/month/day`
+  - daily (`1d`) -> `year/month`
+  - weekly (`1week`) -> `year`
+  - monthly (`1month`) -> `year`
 
 Derived intervals currently written:
 
@@ -54,15 +59,15 @@ Derived intervals currently written:
 
 Ingestion state and health:
 
-- ingestion state: [data_lake/state/coinbase_btc_usd_1m.json](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/coinbase_btc_usd_1m.json)
-- ingestion gap audit: [data_lake/state/ingestion_gap_audit.json](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/ingestion_gap_audit.json)
-- ingestion gap events: [data_lake/state/ingestion_gap_events.jsonl](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/ingestion_gap_events.jsonl)
-- worker healthcheck combines ingestion freshness and trading freshness: [app/scheduler/worker_healthcheck.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/scheduler/worker_healthcheck.py)
-- ingestion log: [logs/ingestion/ingestion.log](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/logs/ingestion/ingestion.log)
+- ingestion state: [data_lake/state/ingestion/coinbase_btc_usd_1m.json](../data_lake/state/ingestion/coinbase_btc_usd_1m.json)
+- ingestion gap audit: [data_lake/state/ingestion/ingestion_gap_audit.json](../data_lake/state/ingestion/ingestion_gap_audit.json)
+- ingestion gap events: [data_lake/state/ingestion/ingestion_gap_events.jsonl](../data_lake/state/ingestion/ingestion_gap_events.jsonl)
+- worker healthcheck combines ingestion freshness and trading freshness: [app/scheduler/worker_healthcheck.py](../app/scheduler/worker_healthcheck.py)
+- ingestion log: [logs/ingestion/ingestion.log](../logs/ingestion/ingestion.log)
 
 ## 3. Sequential Paper-Trading Flow
 
-One-shot entry point: [app/main.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/main.py)
+One-shot entry point: [app/main.py](../app/main.py)
 
 ```text
 After the worker completes ingestion:
@@ -82,32 +87,32 @@ After the worker completes ingestion:
 
 Trading data reader:
 
-- [app/data/parquet_market_data.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/data/parquet_market_data.py)
-- [app/data/data_normalizer.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/data/data_normalizer.py)
+- [app/data/parquet_market_data.py](../app/data/parquet_market_data.py)
+- [app/data/data_normalizer.py](../app/data/data_normalizer.py)
 
 Feature and strategy path:
 
-- indicators: [app/features/indicators.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/features/indicators.py)
-- regime detection: [app/features/regime_features.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/features/regime_features.py)
-- strategy router: [app/strategies/router.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/strategies/router.py)
-- hybrid strategy: [app/strategies/hybrid.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/strategies/hybrid.py)
-- DCA strategy: [app/strategies/dca.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/strategies/dca.py)
-- swing strategy: [app/strategies/swing_atr.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/strategies/swing_atr.py)
-- order review/execution: [app/execution/order_manager.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/execution/order_manager.py)
-- paper broker: [app/execution/paper_broker.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/execution/paper_broker.py)
+- indicators: [app/features/indicators.py](../app/features/indicators.py)
+- regime detection: [app/features/regime_features.py](../app/features/regime_features.py)
+- strategy router: [app/strategies/router.py](../app/strategies/router.py)
+- hybrid strategy: [app/strategies/hybrid.py](../app/strategies/hybrid.py)
+- DCA strategy: [app/strategies/dca.py](../app/strategies/dca.py)
+- swing strategy: [app/strategies/swing_atr.py](../app/strategies/swing_atr.py)
+- order review/execution: [app/execution/order_manager.py](../app/execution/order_manager.py)
+- paper broker: [app/execution/paper_broker.py](../app/execution/paper_broker.py)
 
 Persistent trading artifacts:
 
-- broker state: [data_lake/state/paper_broker_state.json](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/paper_broker_state.json)
-- trade ledger: [data_lake/state/paper_trade_ledger.jsonl](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/paper_trade_ledger.jsonl)
-- cycle log: [data_lake/state/paper_cycle_log.jsonl](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/paper_cycle_log.jsonl)
-- portfolio snapshot: [data_lake/state/paper_portfolio_snapshot.json](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/paper_portfolio_snapshot.json)
-- decision trace: [data_lake/state/paper_decision_trace.jsonl](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/paper_decision_trace.jsonl)
-- trading log: [logs/trading/trading.log](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/logs/trading/trading.log)
+- broker state: [data_lake/state/paper_trade/paper_broker_state.json](../data_lake/state/paper_trade/paper_broker_state.json)
+- trade ledger: [data_lake/state/paper_trade/paper_trade_ledger.jsonl](../data_lake/state/paper_trade/paper_trade_ledger.jsonl)
+- cycle log: [data_lake/state/paper_trade/paper_cycle_log.jsonl](../data_lake/state/paper_trade/paper_cycle_log.jsonl)
+- portfolio snapshot: [data_lake/state/paper_trade/paper_portfolio_snapshot.json](../data_lake/state/paper_trade/paper_portfolio_snapshot.json)
+- decision trace: [data_lake/state/paper_trade/paper_decision_trace.jsonl](../data_lake/state/paper_trade/paper_decision_trace.jsonl)
+- trading log: [logs/trading/trading.log](../logs/trading/trading.log)
 
 Paper-trading accounting:
 
-- execution costs are applied inside [app/execution/paper_broker.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/execution/paper_broker.py)
+- execution costs are applied inside [app/execution/paper_broker.py](../app/execution/paper_broker.py)
 - the current model tracks separately:
   - fees
   - spread cost
@@ -116,11 +121,11 @@ Paper-trading accounting:
 
 Trading health:
 
-- the worker freshness check uses the latest cycle timestamp via [app/scheduler/trading_healthcheck.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/scheduler/trading_healthcheck.py)
+- the worker freshness check uses the latest cycle timestamp via [app/scheduler/trading_healthcheck.py](../app/scheduler/trading_healthcheck.py)
 
 ## 4. Backfill Flow
 
-Entry point: [app/ingestion/backfill.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/ingestion/backfill.py)
+Entry point: [app/ingestion/backfill.py](../app/ingestion/backfill.py)
 
 ```text
 Read start/end arguments
@@ -132,16 +137,17 @@ Read start/end arguments
 
 Backfill notes:
 
-- backfill updates [data_lake/state/coinbase_btc_usd_1m.json](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/coinbase_btc_usd_1m.json), so worker healthchecks and clean bootstrap runs see the restored history
+- backfill updates [data_lake/state/ingestion/coinbase_btc_usd_1m.json](../data_lake/state/ingestion/coinbase_btc_usd_1m.json), so worker healthchecks and clean bootstrap runs see the restored history
 - on Windows, large local backfills should be run with the Docker stack stopped to avoid parquet file-replace conflicts while containers are reading from the lake
+- `python -m app.ingestion.backfill --reuse-existing-source` skips Coinbase fetch when local source candles already cover the requested window and only rebuilds derived intervals/state
 
 ## 5. Dashboard/API Flow
 
-API entry point: [app/api/main.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/api/main.py)
+API entry point: [app/api/main.py](../app/api/main.py)
 
 State loader:
 
-- [app/api/state_reader.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/api/state_reader.py)
+- [app/api/state_reader.py](../app/api/state_reader.py)
 
 ```text
 Read ingestion state
@@ -174,7 +180,7 @@ Current JSON endpoints:
 
 ## 6. Backtest Flow
 
-Entry point: [app/backtest/engine.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/backtest/engine.py)
+Entry point: [app/backtest/engine.py](../app/backtest/engine.py)
 
 ```text
 Load historical candles from parquet
@@ -200,12 +206,12 @@ Backtest metrics:
 
 Saved backtest artifacts:
 
-- latest run: [data_lake/state/backtest_latest.json](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/backtest_latest.json)
-- run history: [data_lake/state/backtest_history.jsonl](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/backtest_history.jsonl)
+- latest run: [data_lake/state/backtesting/backtest_latest.json](../data_lake/state/backtesting/backtest_latest.json)
+- run history: [data_lake/state/backtesting/backtest_history.jsonl](../data_lake/state/backtesting/backtest_history.jsonl)
 
 ## 7. Simulation Flow
 
-Entry point: [app/simulation/engine.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/simulation/engine.py)
+Entry point: [app/simulation/engine.py](../app/simulation/engine.py)
 
 ```text
 Load a bounded parameter grid
@@ -221,8 +227,8 @@ Load a bounded parameter grid
 
 Saved simulation artifacts:
 
-- latest run: [data_lake/state/simulation_latest.json](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/simulation_latest.json)
-- run history: [data_lake/state/simulation_history.jsonl](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/data_lake/state/simulation_history.jsonl)
+- latest run: [data_lake/state/simulations/simulation_latest.json](../data_lake/state/simulations/simulation_latest.json)
+- run history: [data_lake/state/simulations/simulation_history.jsonl](../data_lake/state/simulations/simulation_history.jsonl)
 
 ## 8. Runtime Boundaries
 

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from app.data.coinbase_client import CoinbaseClient
+from app.ingestion.parquet_store import ParquetMarketDataStore
 from app.ingestion.backfill import _chunk_span_for_limit, _parse_datetime, run_backfill
 from app.ingestion.state_store import StateStore
 from app.utils.models import Candle
@@ -80,3 +81,59 @@ def test_run_backfill_uses_main_ingestion_state_path_by_default(tmp_path, monkey
     state = StateStore(config.ingestion.state_path).load()
     assert state.last_successful_run_at is not None
     assert state.provider == "coinbase_backfill"
+
+
+def test_run_backfill_reuses_existing_source_without_coinbase_fetch(tmp_path, monkeypatch) -> None:
+    """Backfill should skip Coinbase fetch when local source data fully covers the requested window."""
+    config = SimpleNamespace(
+        env={},
+        data=SimpleNamespace(data_lake_path=str(tmp_path)),
+        ingestion=SimpleNamespace(state_path=str(tmp_path / "state" / "coinbase_btc_usd_1m.json")),
+        logging=SimpleNamespace(level="INFO"),
+    )
+    store = ParquetMarketDataStore(str(tmp_path))
+    start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    candles = [
+        Candle(
+            timestamp=start + timedelta(minutes=index),
+            open=100.0 + index,
+            high=101.0 + index,
+            low=99.0 + index,
+            close=100.5 + index,
+            volume=1.0,
+        )
+        for index in range(5)
+    ]
+    store.write_candles(symbol="BTC-USD", interval="1m", candles=candles)
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            raise AssertionError("Coinbase client should not be created when reusing local source data")
+
+    class FakePreprocessor:
+        def __init__(self, store) -> None:
+            self.store = store
+
+        def build_all(self, symbol: str, source_interval: str):
+            assert symbol == "BTC-USD"
+            assert source_interval == "1m"
+            return []
+
+    monkeypatch.setattr("app.ingestion.backfill.load_config", lambda: config)
+    monkeypatch.setattr("app.ingestion.backfill.CoinbaseClient", FakeClient)
+    monkeypatch.setattr("app.ingestion.backfill.MarketDataPreprocessor", FakePreprocessor)
+
+    result = run_backfill(
+        start_at=start,
+        end_at=start + timedelta(minutes=4),
+        symbol="BTC-USD",
+        interval="1m",
+        limit=350,
+        sleep_seconds=0,
+        reuse_existing_source=True,
+    )
+
+    assert result.api_calls == 0
+    assert result.rows_written == 0
+    state = StateStore(config.ingestion.state_path).load()
+    assert state.provider == "local_rebuild"

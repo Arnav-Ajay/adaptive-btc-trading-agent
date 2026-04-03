@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from app.config.schema import AppConfig
-from app.ingestion.parquet_store import ParquetMarketDataStore
+from app.ingestion.parquet_store import CandleBounds, ParquetMarketDataStore
 from app.utils.models import Candle
 
 
@@ -30,4 +30,11 @@ class ParquetMarketDataClient:
             symbol=self.config.trading.symbol,
             interval=interval or self.config.ingestion.interval,
             limit=limit if limit is not None else self.config.data.dashboard_lookback,
+        )
+
+    def fetch_candle_bounds(self, interval: str | None = None) -> CandleBounds:
+        """Load the earliest and latest available timestamps for a given interval."""
+        return self.store.load_candle_bounds(
+            symbol=self.config.trading.symbol,
+            interval=interval or self.config.ingestion.interval,
         )

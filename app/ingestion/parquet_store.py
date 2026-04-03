@@ -17,6 +17,20 @@ from app.utils.models import Candle
 
 logger = logging.getLogger(__name__)
 _PARTITION_VALUE_RE = re.compile(r"^[^=]+=([0-9]+)$")
+_PARTITION_LEVELS_BY_INTERVAL: dict[str, tuple[str, ...]] = {
+    "1m": ("year", "month", "day"),
+    "10m": ("year", "month", "day"),
+    "30m": ("year", "month", "day"),
+    "1hr": ("year", "month", "day"),
+    "1d": ("year", "month"),
+    "1week": ("year",),
+    "1month": ("year",),
+}
+_LEGACY_PARTITION_LEVELS_BY_INTERVAL: dict[str, tuple[str, ...]] = {
+    "1d": ("year", "month", "day"),
+    "1week": ("year", "month", "day"),
+    "1month": ("year", "month", "day"),
+}
 
 
 @dataclass(slots=True)
@@ -29,6 +43,14 @@ class WriteResult:
     final_rows_persisted: int
     partitions_updated: int
     latest_timestamp: str | None
+
+
+@dataclass(slots=True)
+class CandleBounds:
+    """Earliest and latest timestamps available for a stored interval."""
+
+    earliest: datetime | None
+    latest: datetime | None
 
 
 class ParquetMarketDataStore:
@@ -56,19 +78,25 @@ class ParquetMarketDataStore:
         total_rows_added = 0
         total_persisted = 0
         partitions_updated = 0
+        partition_columns = list(self._partition_levels(interval))
 
-        for partition_key, partition_frame in frame.groupby(["year", "month", "day"], sort=True):
-            target_path = self._partition_file_path(
+        for partition_key, partition_frame in frame.groupby(partition_columns, sort=True):
+            partition_values = self._partition_value_map(partition_columns, partition_key)
+            target_path = self._partition_file_path(symbol=symbol, interval=interval, partition_values=partition_values)
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            legacy_files = self._legacy_partition_files_for_partition(
                 symbol=symbol,
                 interval=interval,
-                year=int(partition_key[0]),
-                month=int(partition_key[1]),
-                day=int(partition_key[2]),
+                partition_values=partition_values,
             )
-            target_path.parent.mkdir(parents=True, exist_ok=True)
 
+            existing_frames: list[pd.DataFrame] = []
             if target_path.exists():
-                existing = pd.read_parquet(target_path)
+                existing_frames.append(pd.read_parquet(target_path))
+            existing_frames.extend(pd.read_parquet(path) for path in legacy_files)
+
+            if existing_frames:
+                existing = pd.concat(existing_frames, ignore_index=True)
                 total_existing += len(existing.index)
                 merged = pd.concat([existing, partition_frame], ignore_index=True)
             else:
@@ -82,6 +110,7 @@ class ParquetMarketDataStore:
             total_rows_added += rows_added
             total_persisted += len(merged.index)
             partitions_updated += 1
+            self._delete_legacy_files(legacy_files)
 
         latest_timestamp = frame["datetime"].max().isoformat() if not frame.empty else None
         return WriteResult(
@@ -97,6 +126,17 @@ class ParquetMarketDataStore:
         """Load the most recent candles from the partitioned parquet store."""
         return self.load_candles(symbol=symbol, interval=interval, limit=limit)
 
+    def load_candle_bounds(self, symbol: str, interval: str) -> CandleBounds:
+        """Load the earliest and latest available timestamps for an interval."""
+        earliest_file = self._boundary_partition_file(symbol=symbol, interval=interval, newest=False)
+        latest_file = self._boundary_partition_file(symbol=symbol, interval=interval, newest=True)
+        if earliest_file is None or latest_file is None:
+            return CandleBounds(earliest=None, latest=None)
+
+        earliest = self._boundary_timestamp(earliest_file, first=True)
+        latest = self._boundary_timestamp(latest_file, first=False)
+        return CandleBounds(earliest=earliest, latest=latest)
+
     def load_candles(self, symbol: str, interval: str, limit: int | None = None) -> list[Candle]:
         """Load candles from the partitioned parquet store with an optional row limit."""
         symbol_path = self.root_path / f"symbol={symbol}" / f"interval={interval}"
@@ -106,7 +146,7 @@ class ParquetMarketDataStore:
         if limit is not None:
             parquet_files = self._recent_partition_files(symbol=symbol, interval=interval, limit=limit)
         else:
-            parquet_files = list(self._iter_partition_files_reverse(symbol_path))
+            parquet_files = self._partition_files_for_interval(symbol=symbol, interval=interval)
         if not parquet_files:
             return []
 
@@ -136,40 +176,144 @@ class ParquetMarketDataStore:
 
     def _recent_partition_files(self, symbol: str, interval: str, limit: int) -> list[Path]:
         """Return likely-recent partition files without scanning the whole interval tree."""
-        interval_rows_per_day = {
+        interval_rows_per_partition = {
             "1m": 1440,
             "10m": 144,
             "30m": 48,
             "1hr": 24,
-            "1d": 1,
+            "1d": 31,
+            "1week": 53,
+            "1month": 12,
         }
-        rows_per_day = interval_rows_per_day.get(interval)
-        if rows_per_day is None:
-            return list(self._iter_partition_files_reverse(self.root_path / f"symbol={symbol}" / f"interval={interval}"))
+        rows_per_partition = interval_rows_per_partition.get(interval)
+        if rows_per_partition is None:
+            return self._partition_files_for_interval(symbol=symbol, interval=interval)
 
-        estimated_days = max(3, (limit + rows_per_day - 1) // rows_per_day + 2)
+        estimated_partitions = max(3, (limit + rows_per_partition - 1) // rows_per_partition + 2)
         files: list[Path] = []
-        current_day = datetime.now(UTC).date()
-        for offset in range(estimated_days):
-            candidate_day = current_day - timedelta(days=offset)
-            parquet_file = self._partition_file_path(
-                symbol=symbol,
-                interval=interval,
-                year=candidate_day.year,
-                month=candidate_day.month,
-                day=candidate_day.day,
-            )
+        for partition_values in self._recent_partition_value_maps(interval=interval, count=estimated_partitions):
+            parquet_file = self._partition_file_path(symbol=symbol, interval=interval, partition_values=partition_values)
             if parquet_file.exists():
                 files.append(parquet_file)
         if files:
             return files
-        return list(self._iter_partition_files_reverse(self.root_path / f"symbol={symbol}" / f"interval={interval}"))
+        return self._partition_files_for_interval(symbol=symbol, interval=interval)
 
-    def _iter_partition_files_reverse(self, interval_path: Path) -> list[Path]:
-        """Return partition parquet files ordered from newest to oldest."""
+    def _partition_files_for_interval(self, symbol: str, interval: str) -> list[Path]:
+        """Return partition parquet files ordered from newest to oldest for the active layout."""
+        interval_path = self.root_path / f"symbol={symbol}" / f"interval={interval}"
+        files = self._iter_partition_files_reverse(interval_path, levels=self._partition_levels(interval))
+        if files:
+            return files
+        legacy_levels = _LEGACY_PARTITION_LEVELS_BY_INTERVAL.get(interval)
+        if legacy_levels is None:
+            return []
+        return self._iter_partition_files_reverse(interval_path, levels=legacy_levels)
+
+    def _partition_files_oldest_to_newest(self, symbol: str, interval: str) -> list[Path]:
+        """Return partition parquet files ordered from oldest to newest."""
+        return list(reversed(self._partition_files_for_interval(symbol=symbol, interval=interval)))
+
+    def _boundary_partition_file(self, symbol: str, interval: str, *, newest: bool) -> Path | None:
+        """Return the oldest or newest partition file without traversing the full tree."""
+        interval_path = self.root_path / f"symbol={symbol}" / f"interval={interval}"
+        file = self._walk_boundary_file(interval_path, levels=self._partition_levels(interval), newest=newest)
+        if file is not None:
+            return file
+        legacy_levels = _LEGACY_PARTITION_LEVELS_BY_INTERVAL.get(interval)
+        if legacy_levels is None:
+            return None
+        return self._walk_boundary_file(interval_path, levels=legacy_levels, newest=newest)
+
+    def _walk_boundary_file(self, root: Path, *, levels: tuple[str, ...], newest: bool) -> Path | None:
+        """Walk a single oldest/newest branch of the partition tree to a parquet file."""
+        if not root.exists():
+            return None
+
+        current = root
+        remaining_levels = levels
+        while remaining_levels:
+            children = self._sorted_partition_dirs(current)
+            if not children:
+                return None
+            current = children[0] if newest else children[-1]
+            remaining_levels = remaining_levels[1:]
+
+        parquet_file = current / "data.parquet"
+        return parquet_file if parquet_file.exists() else None
+
+    def _iter_partition_files_reverse(self, interval_path: Path, levels: tuple[str, ...]) -> list[Path]:
+        """Return partition parquet files ordered from newest to oldest for a partition depth."""
+        if not interval_path.exists():
+            return []
+
+        def walk(root: Path, remaining_levels: tuple[str, ...]) -> list[Path]:
+            if not remaining_levels:
+                parquet_file = root / "data.parquet"
+                return [parquet_file] if parquet_file.exists() else []
+
+            nested_files: list[Path] = []
+            for child in self._sorted_partition_dirs(root):
+                nested_files.extend(walk(child, remaining_levels[1:]))
+            return nested_files
+
+        return walk(interval_path, levels)
+
+    def _recent_partition_value_maps(self, interval: str, count: int) -> list[dict[str, int]]:
+        """Build recent partition keys in newest-to-oldest order for an interval."""
+        values: list[dict[str, int]] = []
+        today = datetime.now(UTC).date()
+        if self._partition_levels(interval) == ("year", "month", "day"):
+            for offset in range(count):
+                current = today - timedelta(days=offset)
+                values.append({"year": current.year, "month": current.month, "day": current.day})
+            return values
+
+        if self._partition_levels(interval) == ("year", "month"):
+            current_year = today.year
+            current_month = today.month
+            for offset in range(count):
+                year = current_year
+                month = current_month - offset
+                while month <= 0:
+                    year -= 1
+                    month += 12
+                values.append({"year": year, "month": month})
+            return values
+
+        current_year = today.year
+        for offset in range(count):
+            values.append({"year": current_year - offset})
+        return values
+
+    def _legacy_partition_files_for_partition(
+        self,
+        symbol: str,
+        interval: str,
+        partition_values: dict[str, int],
+    ) -> list[Path]:
+        """Return matching legacy day-partition files for intervals whose layout changed."""
+        legacy_levels = _LEGACY_PARTITION_LEVELS_BY_INTERVAL.get(interval)
+        if legacy_levels is None:
+            return []
+
+        interval_path = self.root_path / f"symbol={symbol}" / f"interval={interval}"
+        if not interval_path.exists():
+            return []
+
         files: list[Path] = []
-        for year_dir in self._sorted_partition_dirs(interval_path):
-            for month_dir in self._sorted_partition_dirs(year_dir):
+        year_dir = interval_path / f"year={partition_values['year']:04d}"
+        if not year_dir.exists():
+            return []
+
+        if legacy_levels == ("year", "month", "day"):
+            months = [partition_values["month"]] if "month" in partition_values else [
+                self._partition_sort_key(path) for path in self._sorted_partition_dirs(year_dir)
+            ]
+            for month in months:
+                month_dir = year_dir / f"month={month:02d}"
+                if not month_dir.exists():
+                    continue
                 for day_dir in self._sorted_partition_dirs(month_dir):
                     parquet_file = day_dir / "data.parquet"
                     if parquet_file.exists():
@@ -189,17 +333,48 @@ class ParquetMarketDataStore:
             return -1
         return int(match.group(1))
 
-    def _partition_file_path(self, symbol: str, interval: str, year: int, month: int, day: int) -> Path:
+    def _partition_levels(self, interval: str) -> tuple[str, ...]:
+        """Return the directory partition levels for an interval."""
+        return _PARTITION_LEVELS_BY_INTERVAL.get(interval, ("year", "month", "day"))
+
+    @staticmethod
+    def _partition_value_map(columns: list[str], partition_key: object) -> dict[str, int]:
+        """Normalize pandas groupby keys into a named partition-value mapping."""
+        if not isinstance(partition_key, tuple):
+            partition_key = (partition_key,)
+        return {column: int(value) for column, value in zip(columns, partition_key)}
+
+    def _partition_file_path(self, symbol: str, interval: str, partition_values: dict[str, int]) -> Path:
         """Build the partition file path for a given date."""
-        return (
-            self.root_path
-            / f"symbol={symbol}"
-            / f"interval={interval}"
-            / f"year={year:04d}"
-            / f"month={month:02d}"
-            / f"day={day:02d}"
-            / "data.parquet"
-        )
+        path = self.root_path / f"symbol={symbol}" / f"interval={interval}"
+        for level in self._partition_levels(interval):
+            value = partition_values[level]
+            path = path / f"{level}={value:02d}" if level in {"month", "day"} else path / f"{level}={value:04d}"
+        return path / "data.parquet"
+
+    @staticmethod
+    def _delete_legacy_files(paths: list[Path]) -> None:
+        """Remove migrated legacy files and empty parent directories."""
+        for path in paths:
+            path.unlink(missing_ok=True)
+            for parent in path.parents:
+                if parent.name == "":
+                    break
+                try:
+                    parent.rmdir()
+                except OSError:
+                    break
+
+    @staticmethod
+    def _boundary_timestamp(path: Path, *, first: bool) -> datetime | None:
+        """Read the earliest or latest timestamp from a parquet partition."""
+        frame = pd.read_parquet(path, columns=["datetime"])
+        if frame.empty:
+            return None
+        value = frame.iloc[0 if first else -1]["datetime"]
+        if hasattr(value, "to_pydatetime"):
+            value = value.to_pydatetime()
+        return value.astimezone(UTC) if isinstance(value, datetime) and value.tzinfo else value
 
     def _to_frame(self, candles: list[Candle], symbol: str, interval: str) -> pd.DataFrame:
         """Convert normalized candles into a DataFrame with partition columns."""

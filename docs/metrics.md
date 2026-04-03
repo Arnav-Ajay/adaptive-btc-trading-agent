@@ -7,7 +7,7 @@ It reflects the code that is active today, not the long-term target design.
 ## Last Price
 
 - Definition: the close of the most recent candle in the trading lookback window.
-- Code: [app/features/indicators.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/features/indicators.py)
+- Code: [app/features/indicators.py](../app/features/indicators.py)
 - Financial meaning: the latest market price the trading loop sees.
 - High or low: this has no standalone "good" or "bad" interpretation. It matters relative to prior buys, moving averages, and thresholds.
 - Project perspective: used as the strategy reference price, the paper broker mark price, and the execution reference price.
@@ -18,7 +18,7 @@ Example:
 ## ATR
 
 - Full name: Average True Range.
-- Code: [app/features/atr.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/features/atr.py)
+- Code: [app/features/atr.py](../app/features/atr.py)
 - Calculation:
   - For each candle after the first, compute the true range as the maximum of:
     - `high - low`
@@ -44,8 +44,8 @@ Example:
 ## Execution Costs
 
 - Code:
-  - [app/execution/cost_model.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/execution/cost_model.py)
-  - [app/execution/paper_broker.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/execution/paper_broker.py)
+  - [app/execution/cost_model.py](../app/execution/cost_model.py)
+  - [app/execution/paper_broker.py](../app/execution/paper_broker.py)
 - Current model:
   - fee
   - spread
@@ -75,7 +75,7 @@ Sell model:
 ## RSI
 
 - Full name: Relative Strength Index.
-- Code: [app/features/rsi.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/features/rsi.py)
+- Code: [app/features/rsi.py](../app/features/rsi.py)
 - Calculation:
   - Compute close-to-close deltas.
   - Separate them into gains and losses.
@@ -102,7 +102,7 @@ Examples:
 ## EMA Fast and EMA Slow
 
 - Full name: Exponential Moving Average.
-- Code: [app/features/macd.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/features/macd.py)
+- Code: [app/features/macd.py](../app/features/macd.py)
 - Calculation:
   - EMA applies more weight to recent prices than older prices.
   - The project currently uses:
@@ -129,7 +129,7 @@ Examples:
 ## MACD
 
 - Full name: Moving Average Convergence Divergence.
-- Code: [app/features/macd.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/features/macd.py)
+- Code: [app/features/macd.py](../app/features/macd.py)
 - Calculation:
   - `MACD = EMA(12) - EMA(26)`
 - Financial meaning:
@@ -149,7 +149,7 @@ Example:
 ## MACD Signal
 
 - Definition: a `9`-period EMA of the MACD series.
-- Code: [app/features/macd.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/features/macd.py)
+- Code: [app/features/macd.py](../app/features/macd.py)
 - Financial meaning:
   - smoother version of MACD
   - helps judge whether momentum is accelerating or decelerating
@@ -162,7 +162,7 @@ Example:
 ## MACD Histogram
 
 - Definition: `MACD - signal`
-- Code: [app/features/macd.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/features/macd.py)
+- Code: [app/features/macd.py](../app/features/macd.py)
 - Financial meaning:
   - positive histogram means MACD is above its signal line
   - negative histogram means MACD is below its signal line

@@ -62,7 +62,34 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=int, default=MAX_COINBASE_CANDLES_PER_CALL, help="Max candles per Coinbase call")
     parser.add_argument("--sleep-seconds", type=float, default=0.2, help="Sleep between Coinbase calls")
     parser.add_argument("--state-path", default=None, help="Optional path for backfill run state")
+    parser.add_argument(
+        "--reuse-existing-source",
+        action="store_true",
+        help="Skip Coinbase fetch when local source interval data already exists and rebuild from local parquet only",
+    )
     return parser
+
+
+def _existing_source_state(
+    store: ParquetMarketDataStore,
+    *,
+    symbol: str,
+    interval: str,
+    start_at: datetime | None = None,
+    end_at: datetime | None = None,
+) -> tuple[bool, bool, str | None]:
+    """Return whether local source candles exist and whether they cover the requested window."""
+    candles = store.load_candles(symbol=symbol, interval=interval, limit=None)
+    if not candles:
+        return False, False, None
+
+    first_timestamp = candles[0].timestamp.astimezone(UTC)
+    last_timestamp = candles[-1].timestamp.astimezone(UTC)
+    last_timestamp_iso = last_timestamp.replace(microsecond=0).isoformat()
+    if start_at is None or end_at is None:
+        return True, False, last_timestamp_iso
+    covers_window = first_timestamp <= start_at.astimezone(UTC) and last_timestamp >= end_at.astimezone(UTC)
+    return True, covers_window, last_timestamp_iso
 
 
 def run_backfill(
@@ -73,19 +100,12 @@ def run_backfill(
     limit: int,
     sleep_seconds: float,
     state_path: str | None = None,
+    reuse_existing_source: bool = False,
 ) -> BackfillResult:
     """Run a backfill from start time to end time inclusive."""
     config = load_config()
-    client = CoinbaseClient(
-        api_key=config.env.get("COINBASE_API_KEY", ""),
-        api_secret=config.env.get("COINBASE_API_SECRET", ""),
-    )
     store = ParquetMarketDataStore(config.data.data_lake_path)
     preprocessor = MarketDataPreprocessor(store)
-
-    interval_seconds = CoinbaseClient.interval_seconds(interval)
-    chunk_span = _chunk_span_for_limit(interval_seconds=interval_seconds, limit=limit)
-    step = timedelta(seconds=interval_seconds)
     cursor = start_at.astimezone(UTC)
     hard_end = end_at.astimezone(UTC)
     backfill_state_path = state_path or config.ingestion.state_path
@@ -97,77 +117,116 @@ def run_backfill(
     chunks_with_data = 0
     partitions_touched = 0
     last_candle_timestamp: str | None = None
+    provider = "coinbase_backfill"
 
     logger.info(
-        "Starting backfill symbol=%s interval=%s start=%s end=%s limit=%s state_path=%s",
+        "Starting backfill symbol=%s interval=%s start=%s end=%s limit=%s state_path=%s reuse_existing_source=%s",
         symbol,
         interval,
         cursor.isoformat(),
         hard_end.isoformat(),
         limit,
         backfill_state_path,
+        reuse_existing_source,
     )
 
-    while cursor < hard_end:
-        window_end = min(cursor + chunk_span, hard_end)
-        logger.info(
-            "Backfill chunk fetch symbol=%s interval=%s start=%s end=%s",
-            symbol,
-            interval,
-            cursor.isoformat(),
-            window_end.isoformat(),
-        )
-        candles = client.fetch_ohlcv(
+    has_existing_source = False
+    has_local_coverage = False
+    if reuse_existing_source:
+        has_existing_source, has_local_coverage, last_candle_timestamp = _existing_source_state(
+            store,
             symbol=symbol,
             interval=interval,
-            start=cursor,
-            end=window_end,
-            limit=limit,
+            start_at=start_at,
+            end_at=end_at,
         )
-        api_calls += 1
-        candles_received += len(candles)
-
-        if candles:
-            write_result = store.write_candles(symbol=symbol, interval=interval, candles=candles)
-            rows_written += write_result.rows_written
-            chunks_with_data += 1
-            partitions_touched += write_result.partitions_updated
-            last_candle_timestamp = write_result.latest_timestamp
-            last_candle = candles[-1].timestamp.astimezone(UTC)
-            cursor = last_candle + step
+        if has_existing_source:
+            provider = "local_rebuild"
             logger.info(
-                (
-                    "Backfill chunk complete symbol=%s interval=%s received=%s new_rows=%s "
-                    "partitions=%s latest=%s next_cursor=%s"
-                ),
-                symbol,
-                interval,
-                len(candles),
-                write_result.rows_written,
-                write_result.partitions_updated,
-                write_result.latest_timestamp,
-                cursor.isoformat(),
-            )
-        else:
-            cursor = window_end
-            logger.warning(
-                "Backfill chunk returned no candles symbol=%s interval=%s advancing_to=%s",
-                symbol,
+                "Skipping Coinbase fetch because local %s candles already exist; local coverage for %s -> %s is %s",
                 interval,
                 cursor.isoformat(),
+                hard_end.isoformat(),
+                has_local_coverage,
             )
 
-        if cursor < hard_end and sleep_seconds > 0:
-            time.sleep(sleep_seconds)
+    if not has_existing_source:
+        client = CoinbaseClient(
+            api_key=config.env.get("COINBASE_API_KEY", ""),
+            api_secret=config.env.get("COINBASE_API_SECRET", ""),
+        )
+        interval_seconds = CoinbaseClient.interval_seconds(interval)
+        chunk_span = _chunk_span_for_limit(interval_seconds=interval_seconds, limit=limit)
+        step = timedelta(seconds=interval_seconds)
+
+        while cursor < hard_end:
+            window_end = min(cursor + chunk_span, hard_end)
+            logger.info(
+                "Backfill chunk fetch symbol=%s interval=%s start=%s end=%s",
+                symbol,
+                interval,
+                cursor.isoformat(),
+                window_end.isoformat(),
+            )
+            candles = client.fetch_ohlcv(
+                symbol=symbol,
+                interval=interval,
+                start=cursor,
+                end=window_end,
+                limit=limit,
+            )
+            api_calls += 1
+            candles_received += len(candles)
+
+            if candles:
+                write_result = store.write_candles(symbol=symbol, interval=interval, candles=candles)
+                rows_written += write_result.rows_written
+                chunks_with_data += 1
+                partitions_touched += write_result.partitions_updated
+                last_candle_timestamp = write_result.latest_timestamp
+                last_candle = candles[-1].timestamp.astimezone(UTC)
+                cursor = last_candle + step
+                logger.info(
+                    (
+                        "Backfill chunk complete symbol=%s interval=%s received=%s new_rows=%s "
+                        "partitions=%s latest=%s next_cursor=%s"
+                    ),
+                    symbol,
+                    interval,
+                    len(candles),
+                    write_result.rows_written,
+                    write_result.partitions_updated,
+                    write_result.latest_timestamp,
+                    cursor.isoformat(),
+                )
+            else:
+                cursor = window_end
+                logger.warning(
+                    "Backfill chunk returned no candles symbol=%s interval=%s advancing_to=%s",
+                    symbol,
+                    interval,
+                    cursor.isoformat(),
+                )
+
+            if cursor < hard_end and sleep_seconds > 0:
+                time.sleep(sleep_seconds)
 
     completed_at = datetime.now(UTC).replace(microsecond=0).isoformat()
     derived_results = preprocessor.build_all(symbol=symbol, source_interval=interval)
+    if last_candle_timestamp is None:
+        _, _, last_candle_timestamp = _existing_source_state(
+            store,
+            symbol=symbol,
+            interval=interval,
+            start_at=start_at,
+            end_at=end_at,
+        )
     state_store.save(
         IngestionState(
             last_successful_run_at=completed_at,
             last_ingested_timestamp=last_candle_timestamp,
             rows_written=rows_written,
-            provider="coinbase_backfill",
+            provider=provider,
             metadata={
                 "api_calls": api_calls,
                 "candles_received": candles_received,
@@ -177,6 +236,7 @@ def run_backfill(
                 "interval": interval,
                 "start_at": start_at.isoformat(),
                 "end_at": end_at.isoformat(),
+                "reuse_existing_source": reuse_existing_source,
                 "derived_intervals": [
                     {
                         "interval": result.interval,
@@ -191,11 +251,12 @@ def run_backfill(
 
     logger.info(
         (
-            "Backfill complete symbol=%s interval=%s api_calls=%s candles_received=%s "
+            "Backfill complete symbol=%s interval=%s provider=%s api_calls=%s candles_received=%s "
             "new_rows=%s chunks_with_data=%s partitions_touched=%s last_candle=%s derived=%s"
         ),
         symbol,
         interval,
+        provider,
         api_calls,
         candles_received,
         rows_written,
@@ -235,6 +296,7 @@ def main() -> None:
         limit=min(args.limit, MAX_COINBASE_CANDLES_PER_CALL),
         sleep_seconds=args.sleep_seconds,
         state_path=args.state_path,
+        reuse_existing_source=args.reuse_existing_source,
     )
     print(
         {

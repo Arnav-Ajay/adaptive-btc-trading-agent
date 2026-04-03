@@ -6,7 +6,7 @@ It reflects what the code does today.
 
 ## Regime Detection
 
-- Code: [app/features/regime_features.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/features/regime_features.py)
+- Code: [app/features/regime_features.py](../app/features/regime_features.py)
 - Purpose: classify market conditions before choosing a strategy.
 
 Current rules:
@@ -27,7 +27,7 @@ Project perspective:
 
 ## DCA Strategy
 
-- Code: [app/strategies/dca.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/strategies/dca.py)
+- Code: [app/strategies/dca.py](../app/strategies/dca.py)
 - Purpose: accumulate BTC gradually as the base strategy layer.
 
 Current rules:
@@ -62,7 +62,7 @@ Example:
 
 ## Swing ATR Strategy
 
-- Code: [app/strategies/swing_atr.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/strategies/swing_atr.py)
+- Code: [app/strategies/swing_atr.py](../app/strategies/swing_atr.py)
 - Purpose: take opportunistic momentum entries and manage exits on tracked swing positions.
 
 Current entry rules:
@@ -112,7 +112,7 @@ Example:
 
 ## Hybrid Strategy
 
-- Code: [app/strategies/hybrid.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/strategies/hybrid.py)
+- Code: [app/strategies/hybrid.py](../app/strategies/hybrid.py)
 - Purpose: keep DCA as the base layer while allowing swing opportunities in bullish regimes.
 
 Current behavior:
@@ -130,7 +130,7 @@ Project perspective:
 
 ## Strategy Router
 
-- Code: [app/strategies/router.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/strategies/router.py)
+- Code: [app/strategies/router.py](../app/strategies/router.py)
 - Purpose: select which strategy stack to run based on regime.
 
 Current routing:
@@ -143,7 +143,7 @@ Current routing:
 
 ## Portfolio Guard
 
-- Code: [app/strategies/portfolio_guard.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/strategies/portfolio_guard.py)
+- Code: [app/strategies/portfolio_guard.py](../app/strategies/portfolio_guard.py)
 - Purpose: stop new trades when drawdown becomes too large.
 
 Current rule:
@@ -157,7 +157,7 @@ Backtest behavior:
 
 ## Capital Allocator
 
-- Code: [app/strategies/capital_allocator.py](d:/Users/arnav/Documents/Github_Repos/apziva/adaptive-btc-trading-agent/app/strategies/capital_allocator.py)
+- Code: [app/strategies/capital_allocator.py](../app/strategies/capital_allocator.py)
 - Purpose: prevent signals from exceeding available cash.
 
 Current behavior:

@@ -45,7 +45,7 @@ class CoinbaseIngestionService:
         self.store = ParquetMarketDataStore(config.data.data_lake_path)
         self.preprocessor = MarketDataPreprocessor(self.store)
         self.state_store = StateStore(config.ingestion.state_path)
-        state_dir = Path(config.data.data_lake_path) / "state"
+        state_dir = Path(config.data.data_lake_path) / "state" / "ingestion"
         self.gap_audit_path = state_dir / "ingestion_gap_audit.json"
         self.gap_events_path = state_dir / "ingestion_gap_events.jsonl"
 

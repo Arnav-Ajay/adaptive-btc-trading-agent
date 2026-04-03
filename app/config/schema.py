@@ -45,7 +45,7 @@ class IngestionConfig:
     fetch_limit: int = 300
     max_retries: int = 3
     retry_delay_seconds: int = 5
-    state_path: str = "data_lake/state/coinbase_btc_usd_1m.json"
+    state_path: str = "data_lake/state/ingestion/coinbase_btc_usd_1m.json"
     health_max_staleness_minutes: int = 75
 
 
@@ -93,11 +93,11 @@ class ExecutionConfig:
     spread_pct: float = 0.0005
     slippage_pct: float = 0.0005
     paper_fee_bps: float = 0.0
-    paper_state_path: str = "data_lake/state/paper_broker_state.json"
-    paper_trade_log_path: str = "data_lake/state/paper_trade_ledger.jsonl"
-    paper_cycle_log_path: str = "data_lake/state/paper_cycle_log.jsonl"
-    paper_snapshot_path: str = "data_lake/state/paper_portfolio_snapshot.json"
-    paper_decision_trace_path: str = "data_lake/state/paper_decision_trace.jsonl"
+    paper_state_path: str = "data_lake/state/paper_trade/paper_broker_state.json"
+    paper_trade_log_path: str = "data_lake/state/paper_trade/paper_trade_ledger.jsonl"
+    paper_cycle_log_path: str = "data_lake/state/paper_trade/paper_cycle_log.jsonl"
+    paper_snapshot_path: str = "data_lake/state/paper_trade/paper_portfolio_snapshot.json"
+    paper_decision_trace_path: str = "data_lake/state/paper_trade/paper_decision_trace.jsonl"
 
 
 @dataclass(slots=True)

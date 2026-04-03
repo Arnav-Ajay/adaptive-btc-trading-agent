@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pandas as pd
+
 from app.ingestion.parquet_store import ParquetMarketDataStore
 from app.utils.models import Candle
 
@@ -86,3 +88,125 @@ def test_write_candles_partitions_by_day(tmp_path) -> None:
         / "data.parquet"
     )
     assert partition_file.exists()
+
+
+def test_write_daily_candles_partition_by_month(tmp_path) -> None:
+    """Daily candles should be grouped into a month parquet file."""
+    store = ParquetMarketDataStore(str(tmp_path))
+    store.write_candles(
+        symbol="BTC-USD",
+        interval="1d",
+        candles=[
+            Candle(
+                timestamp=datetime(2026, 3, 24, 0, 0, tzinfo=UTC),
+                open=100.0,
+                high=101.0,
+                low=99.0,
+                close=100.0,
+                volume=5.0,
+            )
+        ],
+    )
+
+    partition_file = (
+        tmp_path
+        / "symbol=BTC-USD"
+        / "interval=1d"
+        / "year=2026"
+        / "month=03"
+        / "data.parquet"
+    )
+    assert partition_file.exists()
+
+
+def test_write_weekly_candles_partition_by_year(tmp_path) -> None:
+    """Weekly candles should be grouped into a year parquet file."""
+    store = ParquetMarketDataStore(str(tmp_path))
+    store.write_candles(
+        symbol="BTC-USD",
+        interval="1week",
+        candles=[
+            Candle(
+                timestamp=datetime(2026, 3, 23, 0, 0, tzinfo=UTC),
+                open=100.0,
+                high=101.0,
+                low=99.0,
+                close=100.0,
+                volume=5.0,
+            )
+        ],
+    )
+
+    partition_file = (
+        tmp_path
+        / "symbol=BTC-USD"
+        / "interval=1week"
+        / "year=2026"
+        / "data.parquet"
+    )
+    assert partition_file.exists()
+
+
+def test_write_monthly_candles_partition_by_year(tmp_path) -> None:
+    """Monthly candles should be grouped into a year parquet file."""
+    store = ParquetMarketDataStore(str(tmp_path))
+    store.write_candles(
+        symbol="BTC-USD",
+        interval="1month",
+        candles=[
+            Candle(
+                timestamp=datetime(2026, 3, 1, 0, 0, tzinfo=UTC),
+                open=100.0,
+                high=101.0,
+                low=99.0,
+                close=100.0,
+                volume=5.0,
+            )
+        ],
+    )
+
+    partition_file = (
+        tmp_path
+        / "symbol=BTC-USD"
+        / "interval=1month"
+        / "year=2026"
+        / "data.parquet"
+    )
+    assert partition_file.exists()
+
+
+def test_load_candles_reads_legacy_daily_layout_for_derived_intervals(tmp_path) -> None:
+    """Read path should fall back to the legacy day-partition layout until migrated."""
+    store = ParquetMarketDataStore(str(tmp_path))
+    legacy_partition = (
+        tmp_path
+        / "symbol=BTC-USD"
+        / "interval=1d"
+        / "year=2026"
+        / "month=03"
+        / "day=24"
+    )
+    legacy_partition.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {
+                "timestamp": int(datetime(2026, 3, 24, 0, 0, tzinfo=UTC).timestamp()),
+                "datetime": datetime(2026, 3, 24, 0, 0, tzinfo=UTC),
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.5,
+                "volume": 5.0,
+                "symbol": "BTC-USD",
+                "interval": "1d",
+                "year": 2026,
+                "month": 3,
+                "day": 24,
+            }
+        ]
+    ).to_parquet(legacy_partition / "data.parquet", index=False)
+
+    candles = store.load_candles(symbol="BTC-USD", interval="1d", limit=None)
+
+    assert len(candles) == 1
+    assert candles[0].timestamp == datetime(2026, 3, 24, 0, 0, tzinfo=UTC)

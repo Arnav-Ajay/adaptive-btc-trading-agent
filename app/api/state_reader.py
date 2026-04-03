@@ -48,21 +48,27 @@ def load_dashboard_state(
     candle_intervals: list[str] | None = None,
     candle_limit: int | None = None,
     candle_limits_by_interval: dict[str, int | None] | None = None,
+    include_ingestion: bool = True,
+    include_paper: bool = True,
     include_backtests: bool = True,
     include_simulations: bool = True,
 ) -> dict[str, Any]:
     """Load the latest ingestion and trading artifacts for the dashboard."""
-    ingestion_state = _load_json(Path(config.ingestion.state_path))
-    ingestion_gap_audit = _load_json(Path(config.data.data_lake_path) / "state" / "ingestion_gap_audit.json")
-    broker_state = _load_json(Path(config.execution.paper_state_path))
-    portfolio_snapshot = _load_json(Path(config.execution.paper_snapshot_path))
-    latest_cycle = _load_latest_jsonl(Path(config.execution.paper_cycle_log_path))
-    latest_trace = _load_latest_jsonl(Path(config.execution.paper_decision_trace_path))
-    latest_trade = _load_latest_jsonl(Path(config.execution.paper_trade_log_path))
+    ingestion_state = _load_json(Path(config.ingestion.state_path)) if include_ingestion else None
+    ingestion_gap_audit = (
+        _load_json(Path(config.data.data_lake_path) / "state" / "ingestion" / "ingestion_gap_audit.json")
+        if include_ingestion
+        else None
+    )
+    broker_state = _load_json(Path(config.execution.paper_state_path)) if include_paper else None
+    portfolio_snapshot = _load_json(Path(config.execution.paper_snapshot_path)) if include_paper else None
+    latest_cycle = _load_latest_jsonl(Path(config.execution.paper_cycle_log_path)) if include_paper else None
+    latest_trace = _load_latest_jsonl(Path(config.execution.paper_decision_trace_path)) if include_paper else None
+    latest_trade = _load_latest_jsonl(Path(config.execution.paper_trade_log_path)) if include_paper else None
     latest_backtest = _load_json(latest_backtest_path(config.data.data_lake_path)) if include_backtests else None
     latest_simulation = _load_json(latest_simulation_path(config.data.data_lake_path)) if include_simulations else None
-    recent_trades = _load_jsonl_records(Path(config.execution.paper_trade_log_path), limit=25)
-    recent_cycles = _load_jsonl_records(Path(config.execution.paper_cycle_log_path), limit=50)
+    recent_trades = _load_jsonl_records(Path(config.execution.paper_trade_log_path), limit=25) if include_paper else []
+    recent_cycles = _load_jsonl_records(Path(config.execution.paper_cycle_log_path), limit=50) if include_paper else []
     recent_backtests = load_backtest_history(config.data.data_lake_path, limit=10) if include_backtests else []
     recent_simulations = load_simulation_history(config.data.data_lake_path, limit=10) if include_simulations else []
     recent_candles: list[dict[str, Any]] = []
@@ -84,8 +90,19 @@ def load_dashboard_state(
                 for candle in candles
             ]
         for interval in intervals:
-            interval_limit = candle_limits_by_interval.get(interval) if candle_limits_by_interval else candle_limit
-            chart_candles[interval] = serialize(client.fetch_dashboard_candles(interval=interval, limit=interval_limit))
+            if candle_limits_by_interval is not None and interval in candle_limits_by_interval:
+                interval_limit = candle_limits_by_interval[interval]
+                if interval_limit is None:
+                    candles = client.store.load_candles(
+                        symbol=config.trading.symbol,
+                        interval=interval,
+                        limit=None,
+                    )
+                else:
+                    candles = client.fetch_dashboard_candles(interval=interval, limit=interval_limit)
+            else:
+                candles = client.fetch_dashboard_candles(interval=interval, limit=candle_limit)
+            chart_candles[interval] = serialize(candles)
         recent_candles = chart_candles.get("1m", [])
 
     return {

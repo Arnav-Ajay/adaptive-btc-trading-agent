@@ -12,7 +12,7 @@ from app.backtest.engine import BacktestResult
 
 
 def _state_dir(data_lake_path: str) -> Path:
-    return Path(data_lake_path) / "state"
+    return Path(data_lake_path) / "state" / "backtesting"
 
 
 def latest_backtest_path(data_lake_path: str) -> Path:

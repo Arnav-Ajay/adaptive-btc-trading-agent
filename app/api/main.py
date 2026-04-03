@@ -676,12 +676,12 @@ def _default_backtest_start(interval: str, end_at: datetime | None) -> datetime 
 
 def _available_replay_bounds(config) -> tuple[datetime, datetime | None]:
     """Return the supported replay bounds for UI controls and route clamping."""
-    earliest = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
     try:
-        latest_candles = ParquetMarketDataClient(config).fetch_dashboard_candles(interval=config.ingestion.interval, limit=1)
+        bounds = ParquetMarketDataClient(config).fetch_candle_bounds(interval=config.ingestion.interval)
     except OSError:
-        latest_candles = []
-    latest = latest_candles[-1].timestamp.astimezone(UTC) if latest_candles else None
+        bounds = None
+    earliest = bounds.earliest if bounds and bounds.earliest is not None else datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    latest = bounds.latest if bounds else None
     return earliest, latest
 
 
@@ -1490,6 +1490,8 @@ def trades_page(
         include_candles=include_trade_chart,
         candle_intervals=["1m"] if include_trade_chart else None,
         candle_limit=90 if include_trade_chart else None,
+        include_ingestion=False,
+        include_paper=view_mode == "paper",
         include_backtests=view_mode == "backtest",
         include_simulations=view_mode == "simulation",
     )
@@ -1677,8 +1679,8 @@ def trades_page(
                 <div class="metric light"><div class="metric-label">Signal</div><div class="metric-value">{escape(str(decision.get('decision', 'n/a')).upper())}</div></div>
                 <div class="metric light"><div class="metric-label">Confidence</div><div class="metric-value">{signal_confidence_score:.2f} ({escape(signal_confidence_label)})</div></div>
                 <div class="metric light"><div class="metric-label">Strategy</div><div class="metric-value">{escape(str(latest_cycle.get('strategy_name', 'n/a')).replace('Strategy', ''))}</div></div>
-                <div class="metric light"><div class="metric-label">RSI</div><div class="metric-value">{float((latest_cycle.get('indicator_snapshot') or {{}}).get('rsi', 0.0)):.2f}</div></div>
-                <div class="metric light"><div class="metric-label">ATR</div><div class="metric-value">{float((latest_cycle.get('indicator_snapshot') or {{}}).get('atr', 0.0)):.2f}</div></div>
+                <div class="metric light"><div class="metric-label">RSI</div><div class="metric-value">{float((latest_cycle.get('indicator_snapshot') or {}).get('rsi', 0.0)):.2f}</div></div>
+                <div class="metric light"><div class="metric-label">ATR</div><div class="metric-value">{float((latest_cycle.get('indicator_snapshot') or {}).get('atr', 0.0)):.2f}</div></div>
                 <div class="metric light"><div class="metric-label">Trend</div><div class="metric-value">{escape(str(latest_cycle.get('regime', 'n/a')).upper())}</div></div>
               </div>
             </div>

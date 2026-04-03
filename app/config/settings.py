@@ -114,7 +114,7 @@ def _apply_env_overrides(base_config: dict[str, Any], env: dict[str, Any]) -> di
     )
     ingestion["state_path"] = env.get(
         "INGESTION_STATE_PATH",
-        ingestion.get("state_path", "data_lake/state/coinbase_btc_usd_1m.json"),
+        ingestion.get("state_path", "data_lake/state/ingestion/coinbase_btc_usd_1m.json"),
     )
     ingestion["health_max_staleness_minutes"] = int(
         env.get(
@@ -181,23 +181,23 @@ def _apply_env_overrides(base_config: dict[str, Any], env: dict[str, Any]) -> di
     )
     execution["paper_state_path"] = env.get(
         "PAPER_STATE_PATH",
-        execution.get("paper_state_path", "data_lake/state/paper_broker_state.json"),
+        execution.get("paper_state_path", "data_lake/state/paper_trade/paper_broker_state.json"),
     )
     execution["paper_trade_log_path"] = env.get(
         "PAPER_TRADE_LOG_PATH",
-        execution.get("paper_trade_log_path", "data_lake/state/paper_trade_ledger.jsonl"),
+        execution.get("paper_trade_log_path", "data_lake/state/paper_trade/paper_trade_ledger.jsonl"),
     )
     execution["paper_cycle_log_path"] = env.get(
         "PAPER_CYCLE_LOG_PATH",
-        execution.get("paper_cycle_log_path", "data_lake/state/paper_cycle_log.jsonl"),
+        execution.get("paper_cycle_log_path", "data_lake/state/paper_trade/paper_cycle_log.jsonl"),
     )
     execution["paper_snapshot_path"] = env.get(
         "PAPER_SNAPSHOT_PATH",
-        execution.get("paper_snapshot_path", "data_lake/state/paper_portfolio_snapshot.json"),
+        execution.get("paper_snapshot_path", "data_lake/state/paper_trade/paper_portfolio_snapshot.json"),
     )
     execution["paper_decision_trace_path"] = env.get(
         "PAPER_DECISION_TRACE_PATH",
-        execution.get("paper_decision_trace_path", "data_lake/state/paper_decision_trace.jsonl"),
+        execution.get("paper_decision_trace_path", "data_lake/state/paper_trade/paper_decision_trace.jsonl"),
     )
 
     merged = dict(base_config)
