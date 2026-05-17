@@ -41,6 +41,7 @@ class TradingJournal:
         execution_results: list[OrderResult],
         snapshot: PortfolioSnapshot,
         summary: str,
+        llm_review: dict[str, object] | None = None,
     ) -> None:
         """Persist one structured cycle record and refresh the latest snapshot."""
         record = {
@@ -51,6 +52,13 @@ class TradingJournal:
             "indicator_snapshot": indicator_snapshot,
             "decision_trace": decision_trace,
             "signal_count": signal_count,
+            "llm_review": llm_review or {
+                "enabled": False,
+                "used": False,
+                "status": "not_recorded",
+                "summary": "",
+                "action_count": 0,
+            },
             "execution_results": [
                 {
                     "accepted": result.accepted,
@@ -86,6 +94,7 @@ class TradingJournal:
             "strategy_name": strategy_name,
             "indicator_snapshot": indicator_snapshot,
             "decision_trace": decision_trace,
+            "llm_review": record["llm_review"],
         }
         self.decision_trace_path.parent.mkdir(parents=True, exist_ok=True)
         with self.decision_trace_path.open("a", encoding="utf-8") as handle:
@@ -98,6 +107,7 @@ class TradingJournal:
             "strategy_name": strategy_name,
             "summary": summary,
             "snapshot": asdict(snapshot),
+            "llm_review": record["llm_review"],
         }
         self.snapshot_path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = self.snapshot_path.with_suffix(".tmp")

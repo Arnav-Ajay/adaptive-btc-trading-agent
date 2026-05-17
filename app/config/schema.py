@@ -12,13 +12,38 @@ class TradingConfig:
     """Trading-related configuration values."""
 
     symbol: str = "BTC-USD"
-    dca_drop_percent: float = 3.0
+    dca_drop_percent: float = 1.5
     dca_order_size_usd: float = 100.0
+    dca_enabled_in_bearish: bool = False
+    dca_weakening_bull_size_multiplier: float = 0.5
+    max_btc_allocation_percent: float = 70.0
+    weakening_bull_target_allocation_percent: float = 35.0
+    bearish_target_allocation_percent: float = 15.0
+    rebalance_tolerance_percent: float = 2.5
+    rebalance_max_sell_fraction: float = 0.5
+    swing_enabled_in_weakening_bull: bool = False
+    swing_enabled_in_sideways: bool = True
+    swing_enabled_in_bearish: bool = False
     atr_multiplier: float = 2.0
-    swing_entry_rsi_max: float = 35.0
+    swing_entry_rsi_max: float = 40.0
     swing_take_profit_percent: float = 2.0
     swing_no_follow_through_candles: int = 3
     swing_follow_through_buffer_percent: float = 0.2
+    pullback_entry_rsi_min: float = 40.0
+    pullback_entry_rsi_max: float = 62.0
+    pullback_min_retracement: float = 0.30
+    pullback_max_retracement: float = 0.75
+    pullback_stop_atr_multiplier: float = 0.75
+    pullback_take_profit_r: float = 2.0
+    pullback_no_follow_through_candles: int = 3
+    pullback_follow_through_buffer_percent: float = 0.2
+    hybrid_dca_enabled_in_bullish: bool = True
+    hybrid_dca_enabled_in_sideways: bool = False
+    hybrid_dca_enabled_in_weakening_bull: bool = False
+    hybrid_dca_enabled_in_bearish: bool = False
+    hybrid_dca_suppressed_by_pullback_signal: bool = True
+    hybrid_dca_suppressed_with_open_pullback_position: bool = True
+    hybrid_bullish_dca_max_allocation_percent: float = 20.0
     max_drawdown_percent: float = 25.0
 
 
@@ -56,6 +81,7 @@ class RuntimeConfig:
     loop_interval_seconds: int = 60
     max_cycles: int | None = 1
     schedule_minutes: int = 30
+    decision_cadence_minutes: int = 30
     health_max_staleness_minutes: int = 95
 
 
@@ -80,6 +106,11 @@ class LLMConfig:
 
     enabled: bool = False
     model: str = "gpt-5.4-mini"
+    api_base_url: str = "https://api.openai.com/v1/responses"
+    timeout_seconds: int = 20
+    allow_blocking: bool = True
+    min_size_multiplier: float = 0.5
+    max_signals_per_review: int = 8
 
 
 @dataclass(slots=True)

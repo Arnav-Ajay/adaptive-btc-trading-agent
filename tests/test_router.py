@@ -48,6 +48,13 @@ def test_router_uses_dca_strategy_outside_bullish_regime() -> None:
     assert isinstance(strategy, DCAStrategy)
 
 
+def test_router_uses_dca_strategy_in_weakening_bull_regime() -> None:
+    """Weakening bull should still route to the base DCA layer for regime-aware base-position control."""
+    router = StrategyRouter(config=_build_config())
+    strategy = router.select(MarketRegime.WEAKENING_BULL)
+    assert isinstance(strategy, DCAStrategy)
+
+
 def test_router_keeps_hybrid_strategy_active_when_swing_positions_exist() -> None:
     """Open swing positions should keep the swing exit path available in non-bullish regimes."""
     router = StrategyRouter(config=_build_config())
@@ -60,3 +67,27 @@ def test_router_uses_hybrid_strategy_for_bullish_trend_even_if_regime_is_not_bul
     router = StrategyRouter(config=_build_config())
     strategy = router.select(MarketRegime.SIDEWAYS, bullish_trend=True)
     assert isinstance(strategy, HybridStrategy)
+
+
+def test_router_uses_score_bias_for_hybrid_when_regime_score_is_positive() -> None:
+    """A positive scored regime should bias toward the hybrid stack even if the label is not bullish."""
+    router = StrategyRouter(config=_build_config())
+    strategy = router.select(
+        MarketRegime.TRANSITION,
+        regime_score=0.28,
+        regime_confidence=0.55,
+        deterioration_score=0.15,
+    )
+    assert isinstance(strategy, HybridStrategy)
+
+
+def test_router_uses_dca_when_scored_regime_is_negative() -> None:
+    """A negative scored regime should bias toward the base DCA layer."""
+    router = StrategyRouter(config=_build_config())
+    strategy = router.select(
+        MarketRegime.SIDEWAYS,
+        regime_score=-0.52,
+        regime_confidence=0.72,
+        deterioration_score=0.3,
+    )
+    assert isinstance(strategy, DCAStrategy)

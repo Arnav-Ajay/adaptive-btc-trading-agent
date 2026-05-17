@@ -33,7 +33,7 @@ def _safe_worker_cycle(service: CoinbaseIngestionService, config, run_lock: thre
         return
     try:
         service.collect_once()
-        run_cycle(config=config)
+        run_cycle(config=load_config())
     finally:
         run_lock.release()
 

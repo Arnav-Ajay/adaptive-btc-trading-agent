@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from app.config.schema import AppConfig
-from app.utils.models import AgentContext, Candle, FeatureSet, Signal, StrategyOutcome, TradeSide
+from app.utils.models import AgentContext, Candle, FeatureSet, MarketRegime, Signal, StrategyOutcome, TradeSide
 
 
 class SwingATRStrategy:
@@ -85,9 +85,23 @@ class SwingATRStrategy:
                 f"signal:{exit_reason.split(':', 1)[0]} btc_units={btc_units:.6f} size_usd={(btc_units * features.last_price):.2f}"
             )
 
+        if context.active_swing_positions:
+            return StrategyOutcome(
+                strategy_name=self.__class__.__name__,
+                signals=signals,
+                trace=trace,
+            )
+
+        if not self._entry_allowed(context):
+            regime = context.market_regime.value if context.market_regime is not None else "unknown"
+            return StrategyOutcome(
+                strategy_name=self.__class__.__name__,
+                signals=[],
+                trace=trace + ["skip:swing_regime_blocked", f"regime={regime}"],
+            )
+
         if (
-            not context.active_swing_positions
-            and features.rsi < self.config.trading.swing_entry_rsi_max
+            features.rsi < self.config.trading.swing_entry_rsi_max
             and features.macd_histogram > 0
             and features.ema_fast > features.ema_slow
         ):
@@ -112,17 +126,24 @@ class SwingATRStrategy:
                     f"signal:momentum_atr_setup size_usd={size_usd:.2f}",
                 ],
             )
-        if signals:
-            return StrategyOutcome(
-                strategy_name=self.__class__.__name__,
-                signals=signals,
-                trace=trace,
-            )
         return StrategyOutcome(
             strategy_name=self.__class__.__name__,
             signals=[],
             trace=trace + ["skip:momentum_conditions_not_met"],
         )
+
+    def _entry_allowed(self, context: AgentContext) -> bool:
+        """Return whether new long swing entries are allowed in the current regime."""
+        regime = context.market_regime
+        if regime is None or regime is MarketRegime.BULLISH:
+            return True
+        if regime is MarketRegime.WEAKENING_BULL:
+            return self.config.trading.swing_enabled_in_weakening_bull
+        if regime is MarketRegime.SIDEWAYS:
+            return self.config.trading.swing_enabled_in_sideways
+        if regime is MarketRegime.BEARISH:
+            return self.config.trading.swing_enabled_in_bearish
+        return False
 
     @staticmethod
     def _candles_since_entry(candles: list[Candle], opened_at: str) -> int:

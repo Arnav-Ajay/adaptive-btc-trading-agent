@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
-from app.api.main import _decision_breakdown, _format_trade_row, app
+from app.api.main import _backtest_step_breakdown, _decision_breakdown, _format_trade_row, _visible_backtest_steps, app
 
 
 def test_bitcoin_page_renders_navigation() -> None:
@@ -13,9 +16,47 @@ def test_bitcoin_page_renders_navigation() -> None:
     response = client.get("/bitcoin")
     assert response.status_code == 200
     assert "Market Context" in response.text
+    assert "LLM Overlay" in response.text
+    assert 'name="llmEnabled"' in response.text
     assert 'href="/trades"' in response.text
     assert "Built by <strong>Arnav</strong> / <strong>Kaijo</strong>" in response.text
     assert "github.com/Arnav-Ajay" in response.text
+    assert 'href="/structure"' in response.text
+
+
+def test_llm_settings_endpoint_persists_runtime_override(monkeypatch) -> None:
+    """The dashboard toggle should persist to runtime settings and affect config loading."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        cache_path = temp_path / "config_cache.json"
+        cache_path.write_text("{}", encoding="utf-8")
+        runtime_path = temp_path / "runtime_settings.json"
+        monkeypatch.setenv("CONFIG_CACHE_PATH", str(cache_path))
+        monkeypatch.setenv("RUNTIME_SETTINGS_PATH", str(runtime_path))
+        monkeypatch.setenv("LLM_ENABLED", "false")
+
+        client = TestClient(app)
+        response = client.put("/api/settings/llm", json={"enabled": True})
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["llm"]["enabled"] is True
+
+        runtime_payload = runtime_path.read_text(encoding="utf-8")
+        assert '"enabled": true' in runtime_payload
+
+        from app.config.settings import load_config
+
+        refreshed = load_config()
+        assert refreshed.llm.enabled is True
+
+
+def test_structure_page_renders_debug_view() -> None:
+    """Structure debug page should render even without data."""
+    client = TestClient(app)
+    response = client.get("/structure")
+    assert response.status_code == 200
+    assert "Structure Debug" in response.text
+    assert "HH / HL / LH / LL Labeling" in response.text
 
 
 def test_trades_page_renders_trade_section() -> None:
@@ -51,11 +92,46 @@ def test_trades_page_can_run_backtest_summary() -> None:
     response = client.get("/trades?mode=backtest&run_backtest=1")
     assert response.status_code == 200
     assert "Backtest Results" in response.text
+    assert "Strategy Comparison" in response.text
     assert "Equity Curve" in response.text
     assert "Decision Breakdown" in response.text
     assert "Decision Log" in response.text
     assert "Final Portfolio Value" in response.text
     assert "Run Status" in response.text
+    assert "Portfolio Equity" not in response.text
+    assert "Latest Trade" not in response.text
+
+
+def test_visible_backtest_steps_hides_guard_carry_forward_rows() -> None:
+    """Decision log should keep the first halt row but hide repeated carry-forward guard rows."""
+    steps = [
+        {"strategy_name": "PortfolioGuard", "decision": "HALT", "trace": ["halt:max_drawdown_reached"]},
+        {"strategy_name": "PortfolioGuard", "decision": "HALT", "trace": ["hold:max_drawdown_guard_active", "halted_at=2026-04-01T00:00:00+00:00"]},
+        {"strategy_name": "DCAStrategy", "decision": "BUY", "trace": ["signal:initial_dca_entry size_usd=100.00"]},
+    ]
+    visible = _visible_backtest_steps(steps)
+    assert len(visible) == 2
+    assert visible[0]["strategy_name"] == "PortfolioGuard"
+    assert visible[1]["strategy_name"] == "DCAStrategy"
+
+
+def test_backtest_step_breakdown_explains_rebalance_sell() -> None:
+    """Backtest breakdown should describe regime-aware de-risking sells explicitly."""
+    breakdown = _backtest_step_breakdown(
+        {
+            "decision": "SELL",
+            "timestamp": "2026-03-25T00:00:00+00:00",
+            "trace": [
+                "component:DCAStrategy",
+                "decision:rebalance_reduce_btc_exposure",
+                "regime=bearish",
+                "signal:dca_rebalance_sell size_usd=333.16",
+                "execution:dca_rebalance_sell:bearish accepted=True side=sell",
+            ],
+        }
+    )
+    assert breakdown["decision"] == "SELL"
+    assert "trimmed base btc exposure" in breakdown["interpretation"].lower()
 
 
 def test_trades_page_can_render_simulation_subview() -> None:
@@ -135,6 +211,7 @@ def test_backtest_api_returns_summary() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["interval"] == "30m"
+    assert payload["decision_cadence_minutes"] == 30
     assert "metrics" in payload
     assert "execution_costs" in payload
 
@@ -151,6 +228,15 @@ def test_backtest_api_accepts_execution_cost_overrides() -> None:
     assert payload["execution_costs"]["fee_pct"] == 0.002
     assert payload["execution_costs"]["spread_pct"] == 0.001
     assert payload["execution_costs"]["slippage_pct"] == 0.0015
+
+
+def test_backtest_api_accepts_decision_cadence_override() -> None:
+    """Backtest API should accept an explicit decision cadence override."""
+    client = TestClient(app)
+    response = client.get("/api/backtest?interval=30m&decision_cadence_minutes=5")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["decision_cadence_minutes"] == 5
 
 
 def test_decision_breakdown_prefers_executed_swing_over_dca_skip_trace() -> None:
@@ -264,6 +350,91 @@ def test_decision_breakdown_explains_threshold_triggered_dca_buy() -> None:
     assert "Current price crossed below the configured DCA threshold." in breakdown["reason_lines"]
     assert any("last buy at $70849.20" in line for line in breakdown["reason_lines"])
     assert "Entry executed at $68720.00 for $100.00." in breakdown["reason_lines"]
+
+
+def test_decision_breakdown_explains_dca_regime_block() -> None:
+    """DCA skips caused by regime gating should explain that accumulation is paused."""
+    cycle = {
+        "signal_count": 0,
+        "execution_results": [],
+        "decision_trace": [
+            "skip:dca_regime_blocked",
+            "regime=bearish",
+        ],
+    }
+    breakdown = _decision_breakdown(cycle, cycle)
+    assert breakdown["decision"] == "NO BUY"
+    assert "DCA is paused in the current market regime." in breakdown["reason_lines"]
+    assert "Current regime = bearish." in breakdown["reason_lines"]
+
+
+def test_decision_breakdown_explains_btc_allocation_cap_block() -> None:
+    """DCA skips caused by exposure caps should surface the allocation values."""
+    cycle = {
+        "signal_count": 0,
+        "execution_results": [],
+        "decision_trace": [
+            "skip:btc_allocation_cap_reached",
+            "btc_allocation_percent=74.20",
+            "max_btc_allocation_percent=70.00",
+        ],
+    }
+    breakdown = _decision_breakdown(cycle, cycle)
+    assert breakdown["decision"] == "NO BUY"
+    assert "BTC exposure has reached the configured allocation cap." in breakdown["reason_lines"]
+    assert "Current BTC allocation is 74.20% vs cap 70.00%." in breakdown["reason_lines"]
+
+
+def test_decision_breakdown_explains_dca_rebalance_sell() -> None:
+    """DCA rebalance sells should explain the regime-aware exposure reduction."""
+    cycle = {
+        "recorded_at": "2026-04-04T12:00:00+00:00",
+        "indicator_snapshot": {"last_price": 68000.0},
+        "signal_count": 1,
+        "execution_results": [
+            {
+                "accepted": True,
+                "order_id": "paper-3",
+                "reason": "dca_rebalance_sell:bearish",
+                "side": "sell",
+                "price": 68000.0,
+                "size_usd": 400.0,
+                "strategy_name": "DCAStrategy",
+            }
+        ],
+        "decision_trace": [
+            "decision:rebalance_reduce_btc_exposure",
+            "regime=bearish",
+            "btc_allocation_percent=80.00",
+            "target_btc_allocation_percent=15.00",
+            "rebalance_tolerance_percent=2.50",
+            "signal:dca_rebalance_sell size_usd=400.00",
+        ],
+    }
+    breakdown = _decision_breakdown(cycle, cycle)
+    assert breakdown["decision"] == "SELL"
+    assert "Current regime = bearish." in breakdown["reason_lines"]
+    assert "BTC allocation was 80.00% vs target 15.00%." in breakdown["reason_lines"]
+    assert "Exit executed at $68000.00 for $400.00." in breakdown["reason_lines"]
+
+
+def test_decision_breakdown_explains_swing_regime_block() -> None:
+    """Swing skips caused by regime gating should be explained explicitly."""
+    cycle = {
+        "signal_count": 0,
+        "execution_results": [],
+        "decision_trace": [
+            "check:rsi_lt_35 actual=34.00",
+            "check:macd_histogram_gt_0 actual=1.0000",
+            "check:ema_fast_gt_ema_slow fast=105.00 slow=100.00",
+            "skip:swing_regime_blocked",
+            "regime=sideways",
+        ],
+    }
+    breakdown = _decision_breakdown(cycle, cycle)
+    assert breakdown["decision"] == "NO BUY"
+    assert "New long swing entries are disabled in the current market regime." in breakdown["reason_lines"]
+    assert "Current regime = sideways." in breakdown["reason_lines"]
 
 
 def test_trade_row_uses_initial_buy_label_for_initial_dca_fill() -> None:

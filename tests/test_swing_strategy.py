@@ -14,7 +14,7 @@ from app.config.schema import (
     TradingConfig,
 )
 from app.strategies.swing_atr import SwingATRStrategy
-from app.utils.models import AgentContext, Candle, FeatureSet, SwingPosition, TradeSide
+from app.utils.models import AgentContext, Candle, FeatureSet, MarketRegime, SwingPosition, TradeSide
 
 
 def _build_config() -> AppConfig:
@@ -152,3 +152,96 @@ def test_swing_strategy_exits_when_no_follow_through_occurs() -> None:
     assert len(outcome.signals) == 1
     assert outcome.signals[0].side is TradeSide.SELL
     assert outcome.signals[0].reason == "swing_no_follow_through:paper-2"
+
+
+def test_swing_strategy_blocks_new_entry_in_sideways_by_default() -> None:
+    config = _build_config()
+    strategy = SwingATRStrategy(config=config)
+    context = AgentContext(config=config)
+    context.available_cash_usd = 1_000.0
+    context.market_regime = MarketRegime.SIDEWAYS
+    features = FeatureSet(
+        last_price=100.0,
+        atr=2.0,
+        rsi=34.0,
+        ema_fast=105.0,
+        ema_slow=100.0,
+        macd_histogram=1.0,
+    )
+
+    outcome = strategy.generate(context=context, candles=_candles(), features=features)
+
+    assert outcome.signals == []
+    assert "skip:swing_regime_blocked" in outcome.trace
+
+
+def test_swing_strategy_allows_new_entry_in_weakening_bull_when_enabled() -> None:
+    config = AppConfig(
+        trading=TradingConfig(
+            swing_entry_rsi_max=35.0,
+            swing_take_profit_percent=2.0,
+            swing_no_follow_through_candles=3,
+            swing_follow_through_buffer_percent=0.2,
+            swing_enabled_in_weakening_bull=True,
+        ),
+        data=DataConfig(),
+        ingestion=IngestionConfig(),
+        runtime=RuntimeConfig(),
+        logging=LoggingConfig(),
+        notifications=NotificationConfig(),
+        llm=LLMConfig(),
+        execution=ExecutionConfig(),
+        env={},
+        cache_path="",
+    )
+    strategy = SwingATRStrategy(config=config)
+    context = AgentContext(config=config)
+    context.available_cash_usd = 1_000.0
+    context.market_regime = MarketRegime.WEAKENING_BULL
+    features = FeatureSet(
+        last_price=100.0,
+        atr=2.0,
+        rsi=34.0,
+        ema_fast=105.0,
+        ema_slow=100.0,
+        macd_histogram=1.0,
+    )
+
+    outcome = strategy.generate(context=context, candles=_candles(), features=features)
+
+    assert len(outcome.signals) == 1
+    assert outcome.signals[0].side is TradeSide.BUY
+    assert outcome.signals[0].reason == "momentum_atr_setup"
+
+
+def test_swing_strategy_keeps_exit_path_active_even_when_regime_blocks_new_entries() -> None:
+    config = _build_config()
+    strategy = SwingATRStrategy(config=config)
+    context = AgentContext(config=config)
+    context.market_regime = MarketRegime.BEARISH
+    context.active_swing_positions = [
+        SwingPosition(
+            position_id="paper-3",
+            symbol="BTC-USD",
+            entry_price=100.0,
+            stop_loss=95.0,
+            btc_units=1.0,
+            size_usd=100.0,
+            opened_at="2026-01-01T00:00:00+00:00",
+        )
+    ]
+    features = FeatureSet(
+        last_price=102.5,
+        atr=1.0,
+        rsi=50.0,
+        ema_fast=103.0,
+        ema_slow=101.0,
+        macd_histogram=0.5,
+    )
+
+    outcome = strategy.generate(context=context, candles=_candles(5), features=features)
+
+    assert len(outcome.signals) == 1
+    assert outcome.signals[0].side is TradeSide.SELL
+    assert outcome.signals[0].reason == "swing_take_profit:paper-3"
+    assert "skip:swing_regime_blocked" not in outcome.trace

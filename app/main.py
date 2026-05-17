@@ -38,6 +38,8 @@ def run_cycle(config: AppConfig | None = None) -> None:
         return
 
     features = market_data_service.compute_features(candles)
+    regime_state = market_data_service.detect_regime_score(candles, features)
+    regime = regime_state.regime_label
     order_manager.mark_price(features.last_price)
     stop_results = order_manager.evaluate_stop_losses()
     snapshot = order_manager.broker.get_portfolio_snapshot()
@@ -58,6 +60,12 @@ def run_cycle(config: AppConfig | None = None) -> None:
                 "macd": features.macd,
                 "macd_signal": features.macd_signal,
                 "macd_histogram": features.macd_histogram,
+                "structure_regime": regime.value,
+                "structure_score": regime_state.structure_score,
+                "momentum_score": regime_state.momentum_score,
+                "regime_score": regime_state.regime_score,
+                "regime_confidence": regime_state.confidence,
+                "deterioration_score": regime_state.deterioration_score,
             },
             decision_trace=[
                 "halt:stop_loss_triggered",
@@ -70,6 +78,13 @@ def run_cycle(config: AppConfig | None = None) -> None:
             execution_results=stop_results,
             snapshot=snapshot,
             summary=summary,
+            llm_review={
+                "enabled": bool(config.llm.enabled),
+                "used": False,
+                "status": "stop_loss_exit",
+                "summary": "Stop-loss exit processed before strategy review",
+                "action_count": 0,
+            },
         )
         notifier.notify_cycle(
             cycle=cycle_number,
@@ -81,13 +96,35 @@ def run_cycle(config: AppConfig | None = None) -> None:
         logger.warning("Skipping new entries for this cycle because a stop-loss exit was triggered")
         return
     context.available_cash_usd = snapshot.cash_usd
+    context.market_regime = regime
+    context.regime_score = regime_state.regime_score
+    context.regime_confidence = regime_state.confidence
+    context.regime_deterioration = regime_state.deterioration_score
+    context.regime_diagnostics = {
+        "swing_count": regime_state.diagnostics.swing_count,
+        "high_count": regime_state.diagnostics.high_count,
+        "low_count": regime_state.diagnostics.low_count,
+        "rising_high_ratio": regime_state.diagnostics.rising_high_ratio,
+        "rising_low_ratio": regime_state.diagnostics.rising_low_ratio,
+        "falling_high_ratio": regime_state.diagnostics.falling_high_ratio,
+        "falling_low_ratio": regime_state.diagnostics.falling_low_ratio,
+        "last_price_vs_prior_low": regime_state.diagnostics.last_price_vs_prior_low,
+        "ema_spread_percent": regime_state.diagnostics.ema_spread_percent,
+        "rsi_centered": regime_state.diagnostics.rsi_centered,
+        "macd_histogram_percent": regime_state.diagnostics.macd_histogram_percent,
+        "atr_percent": regime_state.diagnostics.atr_percent,
+    }
     context.latest_buy_fill_price = order_manager.broker.latest_buy_price()
+    context.latest_dca_buy_price = order_manager.broker.latest_dca_buy_price()
     context.active_swing_positions = order_manager.broker.active_swing_positions()
-    regime = market_data_service.detect_regime(features)
+    context.portfolio_snapshot = snapshot
     strategy = router.select(
         regime,
         bullish_trend=features.ema_fast > features.ema_slow,
         has_open_swing_positions=bool(context.active_swing_positions),
+        regime_score=regime_state.regime_score,
+        regime_confidence=regime_state.confidence,
+        deterioration_score=regime_state.deterioration_score,
     )
     strategy_outcome = strategy.generate(context=context, candles=candles, features=features)
     logger.info(
@@ -102,7 +139,7 @@ def run_cycle(config: AppConfig | None = None) -> None:
         features.macd,
         features.macd_signal,
         features.macd_histogram,
-        regime.value,
+        f"{regime.value} score={regime_state.regime_score:.3f} conf={regime_state.confidence:.3f} det={regime_state.deterioration_score:.3f}",
         strategy_outcome.strategy_name,
     )
     logger.info("Strategy trace: %s", " | ".join(strategy_outcome.trace))
@@ -111,7 +148,9 @@ def run_cycle(config: AppConfig | None = None) -> None:
         features=features,
         regime=regime,
     )
-    execution_results = [*stop_results, *order_manager.execute(validated_signals)]
+    llm_review_meta = dict(order_manager.last_review_meta)
+    decision_timestamp = candles[-1].timestamp.replace(microsecond=0).isoformat()
+    execution_results = [*stop_results, *order_manager.execute(validated_signals, decision_timestamp=decision_timestamp)]
     latest_snapshot = order_manager.broker.get_portfolio_snapshot()
     summary = summarize_portfolio(latest_snapshot)
     journal.record_cycle(
@@ -129,12 +168,14 @@ def run_cycle(config: AppConfig | None = None) -> None:
             "macd": features.macd,
             "macd_signal": features.macd_signal,
             "macd_histogram": features.macd_histogram,
+            "structure_regime": regime.value,
         },
         decision_trace=strategy_outcome.trace,
         signal_count=len(validated_signals),
         execution_results=execution_results,
         snapshot=latest_snapshot,
         summary=summary,
+        llm_review=llm_review_meta,
     )
 
     notifier.notify_cycle(

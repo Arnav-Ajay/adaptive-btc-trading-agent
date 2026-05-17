@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
+import app.backtest.engine as backtest_engine_module
 from app.config.settings import load_config
 from app.ingestion.parquet_store import ParquetMarketDataStore
 from app.simulation.engine import SimulationEngine
-from app.utils.models import Candle
+from app.utils.models import Candle, MarketRegime
 
 
 def _write_simulation_candles(store: ParquetMarketDataStore, *, interval: str, step_minutes: int, count: int) -> None:
@@ -27,6 +29,30 @@ def _write_simulation_candles(store: ParquetMarketDataStore, *, interval: str, s
     store.write_candles(symbol="BTC-USD", interval=interval, candles=candles)
 
 
+def _fake_regime_state(regime_label: MarketRegime = MarketRegime.BULLISH) -> SimpleNamespace:
+    diagnostics = SimpleNamespace(
+        swing_count=1,
+        high_count=1,
+        low_count=1,
+        rising_high_ratio=0.0,
+        rising_low_ratio=0.0,
+        falling_high_ratio=0.0,
+        falling_low_ratio=0.0,
+        last_price_vs_prior_low=0.0,
+        ema_spread_percent=0.0,
+        rsi_centered=0.0,
+        macd_histogram_percent=0.0,
+        atr_percent=0.0,
+    )
+    return SimpleNamespace(
+        regime_label=regime_label,
+        regime_score=0.5,
+        confidence=0.8,
+        deterioration_score=0.1,
+        diagnostics=diagnostics,
+    )
+
+
 def test_simulation_engine_runs_parameter_sweep(tmp_path) -> None:
     config = load_config()
     config.data.data_lake_path = str(tmp_path)
@@ -36,6 +62,7 @@ def test_simulation_engine_runs_parameter_sweep(tmp_path) -> None:
 
     store = ParquetMarketDataStore(str(tmp_path))
     _write_simulation_candles(store, interval="30m", step_minutes=30, count=40)
+    backtest_engine_module.detect_regime_score = lambda window, features: _fake_regime_state()
 
     result = SimulationEngine(config).run(
         symbol="BTC-USD",
@@ -52,3 +79,4 @@ def test_simulation_engine_runs_parameter_sweep(tmp_path) -> None:
     assert result.candidate_count == 2
     assert len(result.candidates) == 2
     assert result.best_candidate_id == result.candidates[0].candidate_id
+    assert result.decision_cadence_minutes == config.runtime.decision_cadence_minutes

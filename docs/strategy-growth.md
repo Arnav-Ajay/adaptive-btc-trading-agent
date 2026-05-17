@@ -19,6 +19,8 @@ At this point:
 - execution costs are modeled
 - buys and sells can be simulated and persisted
 - but strategy edge is still limited
+- the score-based LLM overlay is being tested as a separate optional decision layer
+- the LLM overlay does not replace the deterministic strategy stack
 
 ## Stage 1: DCA Only
 
@@ -123,6 +125,7 @@ Plain reading of current results:
 
 - the system is not failing operationally
 - the current signal set does not yet produce a strong edge
+- the score-based LLM overlay is still experimental and remains optional
 
 ## Confirmed Next Strategy Work
 
@@ -172,3 +175,114 @@ What remains:
 - reduce trade count
 - tune exits for better expectancy
 - decide whether DCA should remain accumulation-only or eventually get its own sell logic
+
+---
+
+## Revised Immediate Next Work
+
+The latest backtest and comparison work clarified the real bottleneck:
+
+* strategy behavior now matters more than engineering quality
+* the system often converges toward BTC exposure and starts behaving like buy-and-hold
+* when swing does not fire, `Hybrid` effectively collapses into `DCA`
+
+So the next strategy work is now ordered as follows.
+
+### 1. Add Structure-Aware Regime Detection
+
+Highest priority:
+
+- replace purely threshold-driven regime classification with a structure-aware layer
+- use market structure as the primary source of regime
+- use indicators as confirmation or refinement
+
+Target regime states:
+
+- bullish
+- weakening_bull
+- bearish_confirmed
+- sideways
+
+Why:
+
+- this is the cleanest way to stop the strategy from drifting into buy-and-hold behavior
+- it creates the gating layer needed for DCA, swing, and de-risking
+
+Implementation status:
+
+- a first minimal structure-aware regime classifier is now in place
+- it can classify:
+  - `bullish`
+  - `weakening_bull`
+  - `bearish`
+  - `sideways`
+- it uses recent swing structure first and falls back to EMA/RSI-style logic when structure is too thin
+
+What it still does NOT yet do:
+
+- it now changes new swing-entry permissions by structure state, but not yet the broader swing-management policy
+- it does not yet provide a complete portfolio-intent layer beyond DCA-specific controls
+- it does not yet add broader non-DCA de-risking logic
+
+### 2. Control DCA
+
+- disable DCA in bearish confirmed
+- reduce or pause DCA in weakening bull
+- add max BTC allocation cap
+- add pause logic based on exposure and regime
+
+Why:
+
+- current DCA is still structurally too blind
+- repeated DCA buys are the main reason equity eventually mirrors BTC exposure
+- if swing does not fire, `Hybrid` collapses into `DCA`
+
+Implementation status:
+
+- DCA is now blocked by default in `bearish`
+- DCA order size is reduced in `weakening_bull`
+- BTC allocation cap is now enforced before new DCA buys
+- DCA can now partially sell base BTC to rebalance exposure down toward regime-aware targets in `weakening_bull` and `bearish`
+- new long swing entries are now blocked by default outside `bullish`, while existing swing positions can still exit normally
+- decision traces now explain whether DCA was blocked by regime, exposure cap, or simple price conditions
+
+What remains:
+
+- make weakening-bull behavior adaptive instead of fixed-size scaling
+- extend de-risking beyond DCA-only inventory to a fuller portfolio-intent layer
+- decide whether sideways should keep full DCA size or also use reduced sizing
+
+### 3. Add Portfolio-Level De-Risking
+
+- partial sell rules
+- rebalance rules
+- exposure caps
+- defensive behavior when structure weakens
+
+Why:
+
+- the system currently knows how to buy better than it knows how to reduce risk
+- this is the missing layer between signal logic and portfolio behavior
+
+### 4. Reduce Trade Count
+
+Target:
+
+- move from high-churn behavior toward roughly `30-50` trades in a comparable backtest window
+
+Why:
+
+- too many small trades create fee drag
+- high turnover with weak signals compounds losses quickly
+
+This still matters, but it should be solved after regime gating and DCA control are in place.
+
+### 5. Improve Profit-Taking and Exit Tuning
+
+We already have swing exits, but they still need tuning.
+
+Likely direction:
+
+- clearer reward target
+- better interaction between take-profit and signal-based exits
+- refine no-follow-through thresholds after regime changes are in place

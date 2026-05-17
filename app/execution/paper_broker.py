@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -28,10 +28,14 @@ class PaperBrokerState:
     total_spread_cost_usd: float
     total_slippage_cost_usd: float
     updated_at: str
+    latest_dca_buy_price: float | None = None
+    recent_signal_keys: list[str] = field(default_factory=list)
 
 
 class PaperBroker(BrokerInterface):
     """File-backed paper broker for safe development and testing."""
+
+    MAX_SIGNAL_HISTORY = 256
 
     def __init__(self, config: AppConfig) -> None:
         """Initialize the simulated broker state."""
@@ -42,9 +46,26 @@ class PaperBroker(BrokerInterface):
 
     def place_order(self, order: OrderRequest) -> OrderResult:
         """Execute a simulated order and persist balances and ledger."""
+        strategy_name = self._resolve_strategy_name(order)
+        if self._is_duplicate_signal(order=order, strategy_name=strategy_name):
+            return OrderResult(
+                accepted=False,
+                order_id="",
+                reason="duplicate_signal_blocked",
+                side=order.side,
+                symbol=order.symbol,
+                size_usd=order.size_usd,
+                price=order.price,
+                strategy_name=strategy_name,
+                stop_loss=order.stop_loss,
+                fee_usd=0.0,
+                spread_cost_usd=0.0,
+                slippage_cost_usd=0.0,
+                execution_cost_usd=0.0,
+                reference_price=order.price,
+            )
         self.mark_price(order.price)
         order_id = f"paper-{int(datetime.now(UTC).timestamp() * 1000)}"
-        strategy_name = self._resolve_strategy_name(order)
         reference_price = order.price
         fee_pct = self.config.execution.fee_pct
         spread_pct = self.config.execution.spread_pct
@@ -68,6 +89,7 @@ class PaperBroker(BrokerInterface):
                 new_total_units = self.state.dca_btc_units + btc_units
                 self.state.dca_btc_units = new_total_units
                 self.state.dca_avg_entry_price = new_total_cost / new_total_units if new_total_units > 0 else 0.0
+                self.state.latest_dca_buy_price = execution.effective_price
             else:
                 self._append_swing_position(
                     SwingPosition(
@@ -78,6 +100,8 @@ class PaperBroker(BrokerInterface):
                         btc_units=btc_units,
                         size_usd=execution.cash_flow_usd,
                         opened_at=datetime.now(UTC).replace(microsecond=0).isoformat(),
+                        origin_strategy=strategy_name,
+                        strategy_name=strategy_name,
                         entry_fee_usd=execution.fee_usd,
                         entry_spread_cost_usd=execution.spread_cost_usd,
                         entry_slippage_cost_usd=execution.slippage_cost_usd,
@@ -102,6 +126,7 @@ class PaperBroker(BrokerInterface):
                     reference_price=reference_price,
                 )
             )
+            self._record_signal_fingerprint(order=order, strategy_name=strategy_name)
             self._save_state()
             return OrderResult(
                 accepted=True,
@@ -167,6 +192,7 @@ class PaperBroker(BrokerInterface):
                     realized_pnl_usd=realized_pnl_usd,
                 )
             )
+            self._record_signal_fingerprint(order=order, strategy_name=strategy_name)
             self._save_state()
             return OrderResult(
                 accepted=True,
@@ -186,6 +212,7 @@ class PaperBroker(BrokerInterface):
                 realized_pnl_usd=realized_pnl_usd,
             )
 
+        self._record_signal_fingerprint(order=order, strategy_name=strategy_name)
         return OrderResult(
             accepted=False,
             order_id="",
@@ -254,6 +281,20 @@ class PaperBroker(BrokerInterface):
                 return float(payload["price"])
         return None
 
+    def latest_dca_buy_price(self) -> float | None:
+        """Return the most recent DCA-originated buy fill price."""
+        if self.state.latest_dca_buy_price is not None:
+            return self.state.latest_dca_buy_price
+        if not self.trade_log_path.exists():
+            return None
+        for line in reversed(self.trade_log_path.read_text(encoding="utf-8").splitlines()):
+            if not line.strip():
+                continue
+            payload = json.loads(line)
+            if payload.get("side") == TradeSide.BUY.value and payload.get("strategy_name") == "DCAStrategy":
+                return float(payload["price"])
+        return None
+
     def evaluate_stop_losses(self) -> list[OrderResult]:
         """Close any swing positions whose ATR stop-loss has been breached."""
         results: list[OrderResult] = []
@@ -261,6 +302,7 @@ class PaperBroker(BrokerInterface):
             stop_loss = float(position.get("stop_loss", 0.0))
             if stop_loss <= 0 or self.state.last_mark_price > stop_loss:
                 continue
+            origin_strategy = str(position.get("origin_strategy") or position.get("strategy_name") or "SwingATRStrategy")
             results.append(
                 self.place_order(
                     OrderRequest(
@@ -269,7 +311,7 @@ class PaperBroker(BrokerInterface):
                         size_usd=float(position["btc_units"]) * self.state.last_mark_price,
                         price=self.state.last_mark_price,
                         reason=f"stop_loss_hit:{position['position_id']}",
-                        strategy_name="SwingATRStrategy",
+                        strategy_name=origin_strategy,
                         stop_loss=stop_loss,
                     )
                 )
@@ -278,7 +320,13 @@ class PaperBroker(BrokerInterface):
 
     def active_swing_positions(self) -> list[SwingPosition]:
         """Return the current open swing positions."""
-        return [SwingPosition(**position) for position in self.state.open_swing_positions]
+        normalized_positions = []
+        for position in self.state.open_swing_positions:
+            payload = dict(position)
+            payload.setdefault("strategy_name", "")
+            payload.setdefault("origin_strategy", payload.get("strategy_name", ""))
+            normalized_positions.append(SwingPosition(**payload))
+        return normalized_positions
 
     def _load_state(self) -> PaperBrokerState:
         """Load persisted broker state or initialize defaults."""
@@ -295,6 +343,8 @@ class PaperBroker(BrokerInterface):
                 total_spread_cost_usd=0.0,
                 total_slippage_cost_usd=0.0,
                 updated_at=datetime.now(UTC).replace(microsecond=0).isoformat(),
+                latest_dca_buy_price=None,
+                recent_signal_keys=[],
             )
 
         payload = json.loads(self.state_path.read_text(encoding="utf-8"))
@@ -311,11 +361,25 @@ class PaperBroker(BrokerInterface):
                 "total_spread_cost_usd": payload.get("total_spread_cost_usd", 0.0),
                 "total_slippage_cost_usd": payload.get("total_slippage_cost_usd", 0.0),
                 "updated_at": payload.get("updated_at", datetime.now(UTC).replace(microsecond=0).isoformat()),
+                "latest_dca_buy_price": payload.get("latest_dca_buy_price"),
+                "recent_signal_keys": payload.get("recent_signal_keys", []),
             }
         payload.setdefault("realized_pnl_usd", 0.0)
         payload.setdefault("total_fees_usd", 0.0)
         payload.setdefault("total_spread_cost_usd", 0.0)
         payload.setdefault("total_slippage_cost_usd", 0.0)
+        payload.setdefault("latest_dca_buy_price", None)
+        payload.setdefault("recent_signal_keys", [])
+        payload["open_swing_positions"] = [
+            {
+                **position,
+                "strategy_name": position.get("strategy_name", ""),
+                "origin_strategy": position.get("origin_strategy", position.get("strategy_name", "")),
+            }
+            for position in payload.get("open_swing_positions", [])
+        ]
+        if payload.get("latest_dca_buy_price") is None:
+            payload["latest_dca_buy_price"] = self._load_latest_dca_buy_price_from_ledger()
         return PaperBrokerState(**payload)
 
     def _save_state(self) -> None:
@@ -325,7 +389,11 @@ class PaperBroker(BrokerInterface):
         temp_path = self.state_path.with_suffix(".tmp")
         with temp_path.open("w", encoding="utf-8") as handle:
             json.dump(asdict(self.state), handle, indent=2)
-        temp_path.replace(self.state_path)
+        try:
+            temp_path.replace(self.state_path)
+        except PermissionError:
+            self.state_path.write_text(json.dumps(asdict(self.state), indent=2), encoding="utf-8")
+            temp_path.unlink(missing_ok=True)
 
     def _append_fill(self, fill: TradeFill) -> None:
         """Append a fill to the trade ledger."""
@@ -383,7 +451,15 @@ class PaperBroker(BrokerInterface):
     @staticmethod
     def _swing_position_id_from_reason(reason: str) -> str:
         """Extract a tracked swing position id from a sell reason, when present."""
-        for prefix in ("stop_loss_hit:", "swing_take_profit:", "swing_signal_exit:", "swing_no_follow_through:"):
+        for prefix in (
+            "stop_loss_hit:",
+            "swing_take_profit:",
+            "swing_signal_exit:",
+            "swing_no_follow_through:",
+            "pullback_take_profit:",
+            "pullback_signal_exit:",
+            "pullback_no_follow_through:",
+        ):
             if reason.startswith(prefix):
                 return reason.removeprefix(prefix)
         return ""
@@ -396,4 +472,72 @@ class PaperBroker(BrokerInterface):
         if "momentum" in order.reason.lower():
             return "SwingATRStrategy"
         return "DCAStrategy"
+
+    def _load_latest_dca_buy_price_from_ledger(self) -> float | None:
+        """Backfill the DCA anchor from the trade ledger when older state files lack it."""
+        if not self.trade_log_path.exists():
+            return None
+        for line in reversed(self.trade_log_path.read_text(encoding="utf-8").splitlines()):
+            if not line.strip():
+                continue
+            payload = json.loads(line)
+            if payload.get("side") == TradeSide.BUY.value and payload.get("strategy_name") == "DCAStrategy":
+                return float(payload["price"])
+        return None
+
+    def _is_duplicate_signal(self, order: OrderRequest, strategy_name: str) -> bool:
+        """Return whether an identical signal has already been processed for the current state."""
+        signal_key = self._signal_fingerprint(order=order, strategy_name=strategy_name)
+        if signal_key in self.state.recent_signal_keys:
+            return True
+        return False
+
+    def _record_signal_fingerprint(self, order: OrderRequest, strategy_name: str) -> None:
+        """Remember the current pre-trade signal fingerprint for idempotency."""
+        signal_key = self._signal_fingerprint(order=order, strategy_name=strategy_name)
+        self.state.recent_signal_keys.append(signal_key)
+        if len(self.state.recent_signal_keys) > self.MAX_SIGNAL_HISTORY:
+            self.state.recent_signal_keys = self.state.recent_signal_keys[-self.MAX_SIGNAL_HISTORY :]
+
+    def _signal_fingerprint(self, order: OrderRequest, strategy_name: str) -> str:
+        """Create a stable fingerprint for duplicate trade protection."""
+        return "|".join(
+            [
+                order.decision_timestamp or "",
+                order.side.value,
+                order.symbol,
+                f"{order.size_usd:.10f}",
+                f"{order.price:.10f}",
+                f"{order.stop_loss:.10f}" if order.stop_loss is not None else "",
+                order.reason,
+                strategy_name,
+                self._position_state_key(),
+            ]
+        )
+
+    def _position_state_key(self) -> str:
+        """Summarize the current open position state for idempotency checks."""
+        swing_key_parts = []
+        for position in self.state.open_swing_positions:
+            swing_key_parts.append(
+                "|".join(
+                    [
+                        str(position.get("position_id", "")),
+                        str(position.get("symbol", "")),
+                        f"{float(position.get('btc_units', 0.0)):.10f}",
+                        f"{float(position.get('entry_price', 0.0)):.10f}",
+                        f"{float(position.get('stop_loss', 0.0)):.10f}",
+                        str(position.get("origin_strategy", position.get("strategy_name", ""))),
+                    ]
+                )
+            )
+        swing_key = ",".join(sorted(swing_key_parts))
+        return "|".join(
+            [
+                f"dca_units={self.state.dca_btc_units:.10f}",
+                f"dca_avg={self.state.dca_avg_entry_price:.10f}",
+                f"dca_anchor={(self.state.latest_dca_buy_price or 0.0):.10f}",
+                f"swing={swing_key}",
+            ]
+        )
 

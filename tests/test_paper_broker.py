@@ -128,6 +128,86 @@ def test_paper_broker_tracks_realized_pnl_for_closed_swing_trade(tmp_path) -> No
     assert snapshot.total_slippage_cost_usd > 0
 
 
+def test_pullback_stop_loss_keeps_strategy_identity(tmp_path) -> None:
+    """Stop-loss exits should inherit the originating pullback strategy name."""
+    config = _build_config(tmp_path)
+    broker = PaperBroker(config)
+    buy_result = broker.place_order(
+        OrderRequest(
+            side=TradeSide.BUY,
+            symbol="BTC-USD",
+            size_usd=200.0,
+            price=50_000.0,
+            reason="pullback_trend_entry",
+            stop_loss=49_000.0,
+            strategy_name="PullbackTrendStrategy",
+        )
+    )
+    assert buy_result.accepted is True
+
+    broker.mark_price(48_500.0)
+    stop_results = broker.evaluate_stop_losses()
+
+    assert len(stop_results) == 1
+    assert stop_results[0].accepted is True
+    assert stop_results[0].strategy_name == "PullbackTrendStrategy"
+    assert stop_results[0].reason.startswith("stop_loss_hit:")
+
+
+def test_duplicate_signal_same_candle_blocked(tmp_path) -> None:
+    """Repeated processing of the same signal in the same candle state should be blocked."""
+    config = _build_config(tmp_path)
+    broker = PaperBroker(config)
+    order = OrderRequest(
+        side=TradeSide.BUY,
+        symbol="BTC-USD",
+        size_usd=2_000.0,
+        price=50_000.0,
+        reason="initial_dca_entry",
+        decision_timestamp="2026-05-16T00:00:00+00:00",
+        strategy_name="DCAStrategy",
+    )
+
+    first_result = broker.place_order(order)
+    second_result = broker.place_order(order)
+
+    assert first_result.accepted is False
+    assert first_result.reason == "insufficient_balance"
+    assert second_result.accepted is False
+    assert second_result.reason == "duplicate_signal_blocked"
+
+
+def test_same_signal_new_candle_allowed(tmp_path) -> None:
+    """The same signal on a later candle should still be eligible for execution."""
+    config = _build_config(tmp_path)
+    broker = PaperBroker(config)
+    first_result = broker.place_order(
+        OrderRequest(
+            side=TradeSide.BUY,
+            symbol="BTC-USD",
+            size_usd=100.0,
+            price=50_000.0,
+            reason="initial_dca_entry",
+            decision_timestamp="2026-05-16T00:00:00+00:00",
+            strategy_name="DCAStrategy",
+        )
+    )
+    second_result = broker.place_order(
+        OrderRequest(
+            side=TradeSide.BUY,
+            symbol="BTC-USD",
+            size_usd=100.0,
+            price=50_000.0,
+            reason="initial_dca_entry",
+            decision_timestamp="2026-05-16T00:30:00+00:00",
+            strategy_name="DCAStrategy",
+        )
+    )
+
+    assert first_result.accepted is True
+    assert second_result.accepted is True
+
+
 def test_paper_broker_closes_swing_position_on_strategy_sell_reason(tmp_path) -> None:
     """Strategy-driven swing exits should close the targeted tracked position."""
     config = _build_config(tmp_path)

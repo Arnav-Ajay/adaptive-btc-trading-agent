@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,9 @@ from typing import Any
 from app.config.schema import AppConfig
 from app.config.sheet_loader import GoogleSheetConfigLoader
 from app.execution.cost_model import resolve_execution_costs
+
+
+logger = logging.getLogger(__name__)
 
 
 def _load_env() -> dict[str, Any]:
@@ -31,6 +35,18 @@ def _load_local_cache(path: Path) -> dict[str, Any]:
         return {}
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def _load_runtime_overrides(path: Path) -> dict[str, Any]:
+    """Load runtime overrides written by the dashboard."""
+    return _load_local_cache(path)
+
+
+def _append_runtime_audit(path: Path, payload: dict[str, Any]) -> None:
+    """Append a runtime settings change record for traceability."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload) + "\n")
 
 
 def _parse_bool(raw_value: str | None, default: bool) -> bool:
@@ -59,13 +75,56 @@ def _apply_env_overrides(base_config: dict[str, Any], env: dict[str, Any]) -> di
     execution = dict(base_config.get("execution", {}))
 
     trading["symbol"] = env.get("TRADING_SYMBOL", trading.get("symbol", "BTC-USD"))
-    trading["dca_drop_percent"] = float(env.get("DCA_DROP_PERCENT", trading.get("dca_drop_percent", 3.0)))
+    trading["dca_drop_percent"] = float(env.get("DCA_DROP_PERCENT", trading.get("dca_drop_percent", 1.5)))
     trading["dca_order_size_usd"] = float(
         env.get("DCA_ORDER_SIZE_USD", trading.get("dca_order_size_usd", 100.0))
     )
+    trading["dca_enabled_in_bearish"] = _parse_bool(
+        env.get("DCA_ENABLED_IN_BEARISH"),
+        trading.get("dca_enabled_in_bearish", False),
+    )
+    trading["dca_weakening_bull_size_multiplier"] = float(
+        env.get(
+            "DCA_WEAKENING_BULL_SIZE_MULTIPLIER",
+            trading.get("dca_weakening_bull_size_multiplier", 0.5),
+        )
+    )
+    trading["max_btc_allocation_percent"] = float(
+        env.get("MAX_BTC_ALLOCATION_PERCENT", trading.get("max_btc_allocation_percent", 70.0))
+    )
+    trading["weakening_bull_target_allocation_percent"] = float(
+        env.get(
+            "WEAKENING_BULL_TARGET_ALLOCATION_PERCENT",
+            trading.get("weakening_bull_target_allocation_percent", 35.0),
+        )
+    )
+    trading["bearish_target_allocation_percent"] = float(
+        env.get(
+            "BEARISH_TARGET_ALLOCATION_PERCENT",
+            trading.get("bearish_target_allocation_percent", 15.0),
+        )
+    )
+    trading["rebalance_tolerance_percent"] = float(
+        env.get("REBALANCE_TOLERANCE_PERCENT", trading.get("rebalance_tolerance_percent", 2.5))
+    )
+    trading["rebalance_max_sell_fraction"] = float(
+        env.get("REBALANCE_MAX_SELL_FRACTION", trading.get("rebalance_max_sell_fraction", 0.5))
+    )
+    trading["swing_enabled_in_weakening_bull"] = _parse_bool(
+        env.get("SWING_ENABLED_IN_WEAKENING_BULL"),
+        trading.get("swing_enabled_in_weakening_bull", False),
+    )
+    trading["swing_enabled_in_sideways"] = _parse_bool(
+        env.get("SWING_ENABLED_IN_SIDEWAYS"),
+        trading.get("swing_enabled_in_sideways", True),
+    )
+    trading["swing_enabled_in_bearish"] = _parse_bool(
+        env.get("SWING_ENABLED_IN_BEARISH"),
+        trading.get("swing_enabled_in_bearish", False),
+    )
     trading["atr_multiplier"] = float(env.get("ATR_MULTIPLIER", trading.get("atr_multiplier", 2.0)))
     trading["swing_entry_rsi_max"] = float(
-        env.get("SWING_ENTRY_RSI_MAX", trading.get("swing_entry_rsi_max", 35.0))
+        env.get("SWING_ENTRY_RSI_MAX", trading.get("swing_entry_rsi_max", 40.0))
     )
     trading["swing_take_profit_percent"] = float(
         env.get("SWING_TAKE_PROFIT_PERCENT", trading.get("swing_take_profit_percent", 2.0))
@@ -80,6 +139,66 @@ def _apply_env_overrides(base_config: dict[str, Any], env: dict[str, Any]) -> di
         env.get(
             "SWING_FOLLOW_THROUGH_BUFFER_PERCENT",
             trading.get("swing_follow_through_buffer_percent", 0.2),
+        )
+    )
+    trading["pullback_entry_rsi_min"] = float(
+        env.get("PULLBACK_ENTRY_RSI_MIN", trading.get("pullback_entry_rsi_min", 40.0))
+    )
+    trading["pullback_entry_rsi_max"] = float(
+        env.get("PULLBACK_ENTRY_RSI_MAX", trading.get("pullback_entry_rsi_max", 62.0))
+    )
+    trading["pullback_min_retracement"] = float(
+        env.get("PULLBACK_MIN_RETRACEMENT", trading.get("pullback_min_retracement", 0.30))
+    )
+    trading["pullback_max_retracement"] = float(
+        env.get("PULLBACK_MAX_RETRACEMENT", trading.get("pullback_max_retracement", 0.75))
+    )
+    trading["pullback_stop_atr_multiplier"] = float(
+        env.get("PULLBACK_STOP_ATR_MULTIPLIER", trading.get("pullback_stop_atr_multiplier", 0.75))
+    )
+    trading["pullback_take_profit_r"] = float(
+        env.get("PULLBACK_TAKE_PROFIT_R", trading.get("pullback_take_profit_r", 2.0))
+    )
+    trading["pullback_no_follow_through_candles"] = int(
+        env.get(
+            "PULLBACK_NO_FOLLOW_THROUGH_CANDLES",
+            trading.get("pullback_no_follow_through_candles", 3),
+        )
+    )
+    trading["pullback_follow_through_buffer_percent"] = float(
+        env.get(
+            "PULLBACK_FOLLOW_THROUGH_BUFFER_PERCENT",
+            trading.get("pullback_follow_through_buffer_percent", 0.2),
+        )
+    )
+    trading["hybrid_dca_enabled_in_bullish"] = _parse_bool(
+        env.get("HYBRID_DCA_ENABLED_IN_BULLISH"),
+        trading.get("hybrid_dca_enabled_in_bullish", True),
+    )
+    trading["hybrid_dca_enabled_in_sideways"] = _parse_bool(
+        env.get("HYBRID_DCA_ENABLED_IN_SIDEWAYS"),
+        trading.get("hybrid_dca_enabled_in_sideways", False),
+    )
+    trading["hybrid_dca_enabled_in_weakening_bull"] = _parse_bool(
+        env.get("HYBRID_DCA_ENABLED_IN_WEAKENING_BULL"),
+        trading.get("hybrid_dca_enabled_in_weakening_bull", False),
+    )
+    trading["hybrid_dca_enabled_in_bearish"] = _parse_bool(
+        env.get("HYBRID_DCA_ENABLED_IN_BEARISH"),
+        trading.get("hybrid_dca_enabled_in_bearish", False),
+    )
+    trading["hybrid_dca_suppressed_by_pullback_signal"] = _parse_bool(
+        env.get("HYBRID_DCA_SUPPRESSED_BY_PULLBACK_SIGNAL"),
+        trading.get("hybrid_dca_suppressed_by_pullback_signal", True),
+    )
+    trading["hybrid_dca_suppressed_with_open_pullback_position"] = _parse_bool(
+        env.get("HYBRID_DCA_SUPPRESSED_WITH_OPEN_PULLBACK_POSITION"),
+        trading.get("hybrid_dca_suppressed_with_open_pullback_position", True),
+    )
+    trading["hybrid_bullish_dca_max_allocation_percent"] = float(
+        env.get(
+            "HYBRID_BULLISH_DCA_MAX_ALLOCATION_PERCENT",
+            trading.get("hybrid_bullish_dca_max_allocation_percent", 20.0),
         )
     )
     trading["max_drawdown_percent"] = float(
@@ -133,6 +252,9 @@ def _apply_env_overrides(base_config: dict[str, Any], env: dict[str, Any]) -> di
     runtime["schedule_minutes"] = int(
         env.get("RUNTIME_SCHEDULE_MINUTES", runtime.get("schedule_minutes", 30))
     )
+    runtime["decision_cadence_minutes"] = int(
+        env.get("RUNTIME_DECISION_CADENCE_MINUTES", runtime.get("decision_cadence_minutes", 30))
+    )
     runtime["health_max_staleness_minutes"] = int(
         env.get(
             "RUNTIME_HEALTH_MAX_STALENESS_MINUTES",
@@ -143,6 +265,18 @@ def _apply_env_overrides(base_config: dict[str, Any], env: dict[str, Any]) -> di
     logging["level"] = env.get("LOG_LEVEL", logging.get("level", "INFO"))
     llm["model"] = env.get("OPENAI_MODEL", llm.get("model", "gpt-5.4-mini"))
     llm["enabled"] = _parse_bool(env.get("LLM_ENABLED"), llm.get("enabled", False))
+    llm["api_base_url"] = env.get("OPENAI_API_BASE_URL", llm.get("api_base_url", "https://api.openai.com/v1/responses"))
+    llm["timeout_seconds"] = int(env.get("OPENAI_TIMEOUT_SECONDS", llm.get("timeout_seconds", 20)))
+    llm["allow_blocking"] = _parse_bool(
+        env.get("LLM_ALLOW_BLOCKING"),
+        llm.get("allow_blocking", True),
+    )
+    llm["min_size_multiplier"] = float(
+        env.get("LLM_MIN_SIZE_MULTIPLIER", llm.get("min_size_multiplier", 0.5))
+    )
+    llm["max_signals_per_review"] = int(
+        env.get("LLM_MAX_SIGNALS_PER_REVIEW", llm.get("max_signals_per_review", 8))
+    )
 
     notifications["telegram_enabled"] = _parse_bool(
         env.get("TELEGRAM_ENABLED"),
@@ -212,11 +346,28 @@ def _apply_env_overrides(base_config: dict[str, Any], env: dict[str, Any]) -> di
     return merged
 
 
+def _apply_runtime_overrides(base_config: dict[str, Any], runtime_overrides: dict[str, Any]) -> dict[str, Any]:
+    """Overlay dashboard-managed runtime settings onto the merged config."""
+    if not runtime_overrides:
+        return base_config
+
+    merged = dict(base_config)
+    for section_name, section_value in runtime_overrides.items():
+        if not isinstance(section_value, dict):
+            continue
+        current_section = dict(merged.get(section_name, {}))
+        current_section.update(section_value)
+        merged[section_name] = current_section
+    return merged
+
+
 def load_config() -> AppConfig:
-    """Load application configuration from env, sheet, and local cache."""
+    """Load application configuration with precedence: runtime override > env > sheet > cache > defaults."""
     env = _load_env()
     cache_path = Path(env.get("CONFIG_CACHE_PATH", "config/config_cache.json"))
+    runtime_overrides_path = Path(env.get("RUNTIME_SETTINGS_PATH", "config/runtime_settings.json"))
     cache_data = _load_local_cache(cache_path)
+    runtime_overrides = _load_runtime_overrides(runtime_overrides_path)
 
     sheet_loader = GoogleSheetConfigLoader.from_env(env)
     sheet_data = sheet_loader.load() if sheet_loader.enabled else {}
@@ -225,7 +376,9 @@ def load_config() -> AppConfig:
     merged.update(cache_data)
     merged.update(sheet_data)
     merged = _apply_env_overrides(merged, env)
+    merged = _apply_runtime_overrides(merged, runtime_overrides)
     merged["env"] = env
     merged["cache_path"] = str(cache_path)
+    merged["runtime_overrides_path"] = str(runtime_overrides_path)
 
     return AppConfig.from_mapping(merged)

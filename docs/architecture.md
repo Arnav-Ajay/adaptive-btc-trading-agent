@@ -52,15 +52,40 @@ Primary modules:
 - [paper_broker.py](../app/execution/paper_broker.py)
 - [router.py](../app/strategies/router.py)
 - [hybrid.py](../app/strategies/hybrid.py)
+- [hybrid_pullback.py](../app/strategies/hybrid_pullback.py)
+- [pullback_selector.py](../app/strategies/pullback_selector.py)
+- [pullback_trend.py](../app/strategies/pullback_trend.py)
 
 Responsibilities:
 
 - load recent candles from local parquet only
 - compute indicators and regime features
-- route between DCA and swing behavior
+- route between legacy DCA/swing behavior and selector-based pullback hybrid behavior
+- optionally apply a score-based LLM review layer after deterministic signal generation
 - execute paper fills through a deterministic fee/spread/slippage model
 - track realized PnL, execution costs, and open swing positions
 - persist broker state, trade ledger, cycle log, portfolio snapshot, and decision trace
+
+Near-term architecture direction:
+
+- shift the regime layer away from pure EMA/RSI threshold emphasis toward a structure-aware regime model
+- use that regime model to gate:
+  - DCA permission
+  - swing-entry permission
+  - future portfolio de-risking actions
+
+Current implementation status:
+
+- recent swing structure now feeds regime classification
+- DCA is now blocked in bearish regimes by default
+- DCA size is now reduced in `weakening_bull`
+- BTC allocation cap is now enforced before new DCA signals are emitted
+- DCA can now emit partial rebalance sells to move base BTC exposure back toward regime-aware targets
+- new swing entries are now gated by regime inside the swing strategy itself, while swing exits remain available for already-open positions
+- `pullback_hybrid` now runs a deterministic selector before allowing DCA
+- default selector behavior blocks new hybrid DCA in `sideways`, `weakening_bull`, and `bearish`
+- bullish hybrid DCA is capped so DCA acts as secondary support rather than the dominant engine
+- the LLM overlay is optional, score-aware, and can be replayed as `llm_hard`, `llm_soft`, or `llm_weighted`
 
 ### 2.3 Backtesting
 

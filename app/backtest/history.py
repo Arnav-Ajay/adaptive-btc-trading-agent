@@ -30,7 +30,9 @@ def serialize_backtest_result(result: BacktestResult) -> dict[str, Any]:
     return {
         "recorded_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
         "symbol": result.symbol,
+        "strategy_profile": result.strategy_profile,
         "interval": result.interval,
+        "decision_cadence_minutes": result.decision_cadence_minutes,
         "start_at": result.start_at,
         "end_at": result.end_at,
         "candles_processed": result.candles_processed,

@@ -20,8 +20,10 @@ class MarketRegime(str, Enum):
     """Supported market regimes."""
 
     BULLISH = "bullish"
+    WEAKENING_BULL = "weakening_bull"
     BEARISH = "bearish"
     SIDEWAYS = "sideways"
+    TRANSITION = "transition"
 
 
 @dataclass(slots=True)
@@ -60,6 +62,7 @@ class Signal:
     reason: str
     reference_price: float = 0.0
     stop_loss: float | None = None
+    decision_timestamp: str = ""
     strategy_name: str = ""
 
 
@@ -73,6 +76,16 @@ class StrategyOutcome:
 
 
 @dataclass(slots=True)
+class StrategySelection:
+    """Deterministic selector decision for multi-strategy profiles."""
+
+    mode: str
+    allow_dca: bool
+    allow_pullback: bool
+    trace: list[str]
+
+
+@dataclass(slots=True)
 class OrderRequest:
     """Broker order request."""
 
@@ -82,6 +95,7 @@ class OrderRequest:
     price: float
     reason: str = ""
     stop_loss: float | None = None
+    decision_timestamp: str = ""
     strategy_name: str = ""
 
 
@@ -157,9 +171,21 @@ class SwingPosition:
     btc_units: float
     size_usd: float
     opened_at: str
+    origin_strategy: str = ""
+    strategy_name: str = ""
     entry_fee_usd: float = 0.0
     entry_spread_cost_usd: float = 0.0
     entry_slippage_cost_usd: float = 0.0
+
+
+@dataclass(slots=True)
+class LLMSignalAction:
+    """Bounded per-signal review action returned by the LLM."""
+
+    signal_index: int
+    action: str
+    size_multiplier: float
+    rationale: str
 
 
 @dataclass(slots=True)
@@ -168,6 +194,69 @@ class LLMAdvice:
 
     summary: str
     parameter_suggestions: dict[str, float]
+    signal_actions: list[LLMSignalAction] = field(default_factory=list)
+    decision: LLMDecision | None = None
+    decision_present: bool = False
+    decision_valid: bool = False
+    enabled: bool = False
+    used: bool = False
+    status: str = ""
+
+
+@dataclass(slots=True)
+class LLMInput:
+    """Structured input passed to the LLM decision layer."""
+
+    regime: str
+    trend: str
+    volatility: str
+    rsi: float
+    atr_percent: float
+    recent_return: float
+    drawdown: float
+    position_size: float
+
+
+@dataclass(slots=True)
+class LLMDecision:
+    """Structured single-action LLM decision."""
+
+    action: str
+    confidence: float
+    reason: str
+    reason_code: str = ""
+    score: float = 0.0
+
+
+@dataclass(slots=True)
+class RegimeDiagnostics:
+    """Structure and momentum diagnostics used to derive a regime score."""
+
+    swing_count: int = 0
+    high_count: int = 0
+    low_count: int = 0
+    rising_high_ratio: float = 0.0
+    rising_low_ratio: float = 0.0
+    falling_high_ratio: float = 0.0
+    falling_low_ratio: float = 0.0
+    last_price_vs_prior_low: float = 0.0
+    ema_spread_percent: float = 0.0
+    rsi_centered: float = 0.0
+    macd_histogram_percent: float = 0.0
+    atr_percent: float = 0.0
+
+
+@dataclass(slots=True)
+class RegimeScore:
+    """Continuous regime view used for routing and logging."""
+
+    regime_label: MarketRegime
+    structure_score: float
+    momentum_score: float
+    regime_score: float
+    confidence: float
+    deterioration_score: float
+    diagnostics: RegimeDiagnostics = field(default_factory=RegimeDiagnostics)
 
 
 @dataclass(slots=True)
@@ -175,8 +264,15 @@ class AgentContext:
     """Runtime context passed into strategies."""
 
     config: AppConfig
+    market_regime: MarketRegime | None = None
     latest_buy_fill_price: float | None = None
+    latest_dca_buy_price: float | None = None
     active_swing_positions: list[SwingPosition] = field(default_factory=list)
+    portfolio_snapshot: PortfolioSnapshot | None = None
+    regime_score: float | None = None
+    regime_confidence: float | None = None
+    regime_deterioration: float | None = None
+    regime_diagnostics: dict[str, object] = field(default_factory=dict)
     available_cash_usd: float = field(init=False)
 
     def __post_init__(self) -> None:

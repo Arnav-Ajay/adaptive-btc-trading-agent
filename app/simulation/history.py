@@ -51,7 +51,9 @@ def serialize_simulation_result(result: SimulationResult) -> dict[str, Any]:
     return {
         "recorded_at": recorded_at,
         "symbol": result.symbol,
+        "strategy_profile": result.strategy_profile,
         "interval": result.interval,
+        "decision_cadence_minutes": result.decision_cadence_minutes,
         "start_at": result.start_at,
         "end_at": result.end_at,
         "candidate_count": result.candidate_count,

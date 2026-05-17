@@ -9,6 +9,7 @@ from itertools import product
 
 from app.backtest.engine import BacktestEngine, BacktestResult
 from app.config.schema import AppConfig
+from app.strategies.profiles import normalize_strategy_profile
 
 
 @dataclass(slots=True)
@@ -25,7 +26,9 @@ class SimulationResult:
     """Container for one simulation sweep."""
 
     symbol: str
+    strategy_profile: str
     interval: str
+    decision_cadence_minutes: int
     start_at: str
     end_at: str
     candidate_count: int
@@ -50,17 +53,20 @@ class SimulationEngine:
         start_at: datetime | None = None,
         end_at: datetime | None = None,
         parameter_grid: dict[str, list[float | int]],
+        strategy_profile: str | None = None,
     ) -> SimulationResult:
         symbol = symbol or self.config.trading.symbol
         interval = interval or self.config.ingestion.interval
+        strategy_profile = normalize_strategy_profile(strategy_profile)
         candidates: list[SimulationCandidate] = []
-        for index, params in enumerate(self._parameter_sets(parameter_grid), start=1):
+        for index, params in enumerate(self._parameter_sets(parameter_grid, strategy_profile=strategy_profile), start=1):
             candidate_config = self._configured_candidate(params)
             result = BacktestEngine(candidate_config).run(
                 symbol=symbol,
                 interval=interval,
                 start_at=start_at,
                 end_at=end_at,
+                strategy_profile=strategy_profile,
             )
             candidates.append(
                 SimulationCandidate(
@@ -76,7 +82,9 @@ class SimulationEngine:
         best_candidate = ranked_candidates[0]
         return SimulationResult(
             symbol=symbol,
+            strategy_profile=strategy_profile,
             interval=interval,
+            decision_cadence_minutes=max(1, int(self.config.runtime.decision_cadence_minutes)),
             start_at=best_candidate.result.start_at,
             end_at=best_candidate.result.end_at,
             candidate_count=len(ranked_candidates),
@@ -85,7 +93,14 @@ class SimulationEngine:
             parameter_grid=parameter_grid,
         )
 
-    def _parameter_sets(self, parameter_grid: dict[str, list[float | int]]) -> list[dict[str, float | int]]:
+    def _parameter_sets(
+        self,
+        parameter_grid: dict[str, list[float | int]],
+        *,
+        strategy_profile: str,
+    ) -> list[dict[str, float | int]]:
+        if strategy_profile in {"buy_and_hold", "dca_only"}:
+            return [{}]
         keys = list(parameter_grid.keys())
         value_sets = [parameter_grid[key] for key in keys]
         combinations = [dict(zip(keys, combo, strict=True)) for combo in product(*value_sets)]
@@ -95,6 +110,8 @@ class SimulationEngine:
 
     def _configured_candidate(self, params: dict[str, float | int]) -> AppConfig:
         config = copy.deepcopy(self.config)
+        if not params:
+            return config
         config.trading.swing_entry_rsi_max = float(params["swing_entry_rsi_max"])
         config.trading.swing_take_profit_percent = float(params["swing_take_profit_percent"])
         config.trading.swing_no_follow_through_candles = int(params["swing_no_follow_through_candles"])

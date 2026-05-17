@@ -1,167 +1,641 @@
-# Strategies
+# Strategy Document (Conceptual Layer)
 
-This document describes the strategies and trading controls currently present in the project.
+This document defines the **conceptual design space** of the trading system.
 
-It reflects what the code does today.
+It is NOT a reflection of current implementation.
+Instead, it captures:
 
-## Regime Detection
+* core strategy primitives
+* decision structures
+* entry / exit logic types
+* risk management approaches
+* regime-aware behavior
 
-- Code: [app/features/regime_features.py](../app/features/regime_features.py)
-- Purpose: classify market conditions before choosing a strategy.
+The goal is to evolve this into a **complete decision engine framework**.
 
-Current rules:
+---
 
-- Bullish:
-  - `ema_fast > ema_slow`
-  - `rsi >= 55`
-- Bearish:
-  - `ema_fast < ema_slow`
-  - `rsi <= 45`
-- Sideways:
-  - anything else
+## Optional LLM Overlay
 
-Project perspective:
+The current project also experiments with an optional score-based LLM review layer.
 
-- This is a lightweight deterministic regime classifier.
-- It does not use volume, on-chain metrics, or LLM input.
+This overlay:
 
-## DCA Strategy
+* sits after deterministic signal generation
+* can only `allow`, `reduce`, or `block` existing signals
+* emits a `decision` object with `confidence` and `score`
+* is replayed in the evaluation harness as:
+  * `llm_hard`
+  * `llm_soft`
+  * `llm_weighted`
 
-- Code: [app/strategies/dca.py](../app/strategies/dca.py)
-- Purpose: accumulate BTC gradually as the base strategy layer.
+It does not replace the strategy primitives below.
 
-Current rules:
+---
 
-- If no prior buy fill exists:
-  - place an initial DCA buy
-- Else:
-  - compute the next dip threshold from the latest buy fill in the ledger:
-    - `latest_buy_fill_price * (1 - dca_drop_percent / 100)`
-  - if `last_price <= threshold`, place another DCA buy
-  - otherwise skip
+## 1. Strategy Primitives
 
-Inputs:
+All strategies in the system reduce to a combination of these primitives:
 
-- latest buy fill price from the persisted trade ledger
-- current last price
-- `dca_drop_percent`
-- `dca_order_size_usd`
+### 1.1 Mean Reversion
 
-Project perspective:
+Concept:
 
-- It is persistent across runs because it reads the prior buy state from the ledger.
-- It does not yet support time-based DCA intervals.
-- It now explains its threshold basis in the Trades-page decision breakdown.
+* price deviates from average → expected to revert
+
+Examples:
+
+* DCA
+* RSI oversold
+* Bollinger Band lower touch
+
+Strengths:
+
+* works well in sideways markets
+
+Weaknesses:
+
+* fails in strong downtrends
+
+---
+
+### 1.2 Momentum / Trend Following
+
+Concept:
+
+* price is moving in a direction → continue in same direction
+
+Examples:
+
+* EMA crossover
+* MACD positive histogram
+* breakout entries
+
+Strengths:
+
+* captures large moves
+
+Weaknesses:
+
+* suffers in choppy markets
+
+---
+
+### 1.3 Volatility-Based Control
+
+Concept:
+
+* position sizing and exits depend on volatility
+
+Examples:
+
+* ATR stop-loss
+* volatility-adjusted position sizing
+
+Strengths:
+
+* adapts to market conditions
+
+Weaknesses:
+
+* does not generate edge alone
+
+---
+
+### 1.4 Timing / Entry Refinement
+
+Concept:
+
+* improve entry quality within another strategy
+
+Examples:
+
+* pullback entry in uptrend
+* RSI reclaim after oversold
+* candle confirmation
+
+Strengths:
+
+* reduces poor entries
+
+Weaknesses:
+
+* can reduce trade frequency too much
+
+---
+
+## 2. Entry Types
+
+### 2.1 Blind Accumulation
+
+* fixed rule-based buying
+* no timing or filtering
 
 Example:
 
-- Latest buy at `70,210.01`, DCA drop `3%`
-- Next trigger price becomes `68,103.71`
-- If BTC is `70,284.96`, skip
-- If BTC falls to `67,900`, buy
+* basic DCA
 
-## Swing ATR Strategy
+---
 
-- Code: [app/strategies/swing_atr.py](../app/strategies/swing_atr.py)
-- Purpose: take opportunistic momentum entries and manage exits on tracked swing positions.
+### 2.2 Dip-Based Entry (Mean Reversion)
 
-Current entry rules:
-
-- `last_price > 0`
-- `atr > 0`
-- `rsi < swing_entry_rsi_max`
-- `macd_histogram > 0`
-- `ema_fast > ema_slow`
-
-If all pass:
-
-- create a buy signal
-- set signal size to `min(250, available_cash_usd)`
-- attach stop loss:
-  - `stop_loss = last_price - atr_multiplier * atr`
-
-Current exit rules for open swing positions:
-
-- take profit if:
-  - `last_price >= entry_price * (1 + swing_take_profit_percent / 100)`
-- no follow-through exit if:
-  - at least `swing_no_follow_through_candles` candles have passed since entry
-  - and price is still below:
-    - `entry_price * (1 + swing_follow_through_buffer_percent / 100)`
-- signal exit if:
-  - `macd_histogram <= 0`
-  - or `ema_fast <= ema_slow`
-- defensive stop-loss exit if mark price breaches the tracked stop level
-
-Project perspective:
-
-- Entry and sell-exit logic now exist for the swing layer.
-- Entry is now intentionally much stricter to reduce trade churn.
-- ATR stop-loss values are attached to swing entries.
-- Open swing positions are tracked separately from DCA holdings.
-- Stop-loss checks run before new entries in each trading cycle.
-- If a swing stop-loss exit fires, the live trading cycle now skips fresh entries for that same cycle.
-- Backtests now continue after a swing stop-loss exit instead of terminating the whole replay.
+* buy after price drops a threshold
 
 Example:
 
-- `last_price = 62,500`
-- `atr = 1,000`
-- `atr_multiplier = 1.5`
-- stop loss becomes `61,000`
+* DCA with drop %
 
-## Hybrid Strategy
+---
 
-- Code: [app/strategies/hybrid.py](../app/strategies/hybrid.py)
-- Purpose: keep DCA as the base layer while allowing swing opportunities in bullish regimes.
+### 2.3 Momentum Entry
 
-Current behavior:
+* buy when trend conditions are strong
 
-- always run DCA
-- also run swing logic
-- merge both signal sets and decision traces
+Example:
 
-Project perspective:
+* EMA + MACD confirmation
 
-- This is the current approximation of the project's intended hybrid behavior.
-- It is used in bullish regimes for fresh entries.
-- It also remains active while open swing positions exist so swing exits can still be generated outside bullish regimes.
-- Trades-page decision breakdowns now surface the DCA and swing component outcomes separately when Hybrid produces no trade.
+---
 
-## Strategy Router
+### 2.4 Pullback in Trend
 
-- Code: [app/strategies/router.py](../app/strategies/router.py)
-- Purpose: select which strategy stack to run based on regime.
+* buy dips within an uptrend
 
-Current routing:
+Example:
 
-- bullish -> `HybridStrategy`
-- bearish -> `DCAStrategy`
-- sideways -> `DCAStrategy`
-- exception:
-  - if an open swing position exists, keep `HybridStrategy` active so the swing layer can emit sell exits
+* trend filter + retracement
 
-## Portfolio Guard
+---
 
-- Code: [app/strategies/portfolio_guard.py](../app/strategies/portfolio_guard.py)
-- Purpose: stop new trades when drawdown becomes too large.
+### 2.5 Breakout Entry (Future)
 
-Current rule:
+* buy when price breaks resistance
 
-- pause trading if:
-  - `drawdown_percent >= max_drawdown_percent`
+---
 
-Backtest behavior:
+## 3. Exit Types
 
-- the same guard now halts historical replay early once the drawdown limit is breached
+### 3.1 Stop Loss
 
-## Capital Allocator
+* exit when loss threshold is hit
 
-- Code: [app/strategies/capital_allocator.py](../app/strategies/capital_allocator.py)
-- Purpose: prevent signals from exceeding available cash.
+Types:
 
-Current behavior:
+* fixed %
+* ATR-based
 
-- clamp each signal size to remaining cash
-- skip zero or negative sizes
-- process signals sequentially
+---
+
+### 3.2 Take Profit
+
+* exit at predefined gain
+
+---
+
+### 3.3 Signal-Based Exit
+
+* exit when indicators reverse
+
+Example:
+
+* MACD flips
+* EMA crossover reversal
+
+---
+
+### 3.4 No Follow-Through Exit
+
+* exit if trade does not move favorably within time window
+
+---
+
+### 3.5 Time-Based Exit (Future)
+
+* exit after fixed time duration
+
+---
+
+### 3.6 Trailing Stop (Future)
+
+* dynamic stop that moves with price
+
+---
+
+## 4. Risk Management
+
+### 4.1 Position Sizing
+
+* fixed size
+* % of portfolio
+
+---
+
+### 4.2 Volatility-Based Sizing (Future)
+
+* smaller size in high volatility
+* larger size in low volatility
+
+---
+
+### 4.3 Portfolio Guard
+
+* halt trading after drawdown threshold
+
+---
+
+### 4.4 Capital Allocation
+
+* prevent overuse of capital
+
+---
+
+## 5. Regime Detection
+
+### 5.1 Current Approach
+
+* EMA + RSI based classification
+
+States:
+
+* Bullish
+* Bearish
+* Sideways
+
+---
+
+### 5.2 Conceptual Limitation
+
+* simplistic
+* no volume or macro signals
+
+---
+
+## 6. Regime → Strategy Mapping
+
+This is the most critical system-level behavior.
+
+### 6.1 Desired Mapping
+
+Bullish:
+
+* Momentum
+* Pullback entries
+
+Sideways:
+
+* Mean reversion
+
+Bearish:
+
+* Defensive behavior
+* reduced or no buying
+
+---
+
+### 6.2 Current Gap
+
+* swing permissions now have a basic regime gate, but not yet a richer regime-specific policy
+* broader portfolio intent is still incomplete beyond DCA-specific controls
+
+---
+
+## 7. Strategy Structures
+
+### 7.1 Single Strategy
+
+* only one logic active
+
+---
+
+### 7.2 Hybrid Strategy
+
+* multiple strategies active together
+
+Example:
+
+* DCA + Momentum
+
+---
+
+### 7.3 Conditional Strategy (Desired)
+
+* strategies activated only under conditions
+
+Example:
+
+* if bullish → enable momentum
+* if sideways → enable DCA
+* if bearish → disable buying
+
+---
+
+## 8. Portfolio Intent (Missing Layer)
+
+The system currently lacks explicit intent.
+
+## 8.1 Possible Modes
+
+* Accumulation
+* Trading
+* Capital Preservation
+
+---
+
+## 9. Known System Gaps
+
+### 9.1 No strict regime enforcement
+
+* strategies run even in unfavorable conditions
+
+### 9.2 DCA has no exit philosophy
+
+* purely accumulation
+
+## 9.3 No volatility-aware sizing
+
+* position size not adjusted dynamically
+
+## 9.4 No portfolio-level decision layer
+
+* system reacts per signal, not per objective
+
+---
+
+## 10. Core System Equation
+
+Every strategy can be expressed as:
+
+Strategy = Entry + Exit + Risk + Market Condition
+
+---
+
+## 11. Guiding Principle
+
+There are not many unique strategies.
+
+Most systems are combinations of:
+
+* mean reversion
+* momentum
+* volatility control
+* timing refinement
+
+The edge comes from:
+
+* when to apply them
+* how to combine them
+* how to control risk
+
+---
+
+## 12. Additional Concepts from Research
+
+### 12.1 Breakout-Based Trading
+
+Concept:
+
+* price breaks structure → continuation move
+
+Key ideas:
+
+* breakout works better in direction of trend fileciteturn18file1turn18file2
+* often follows consolidation
+
+Enhancements:
+
+* combine with RSI / trend filters
+* avoid false breakouts in sideways markets
+
+### 12.2 Structured Risk-Reward Execution
+
+Concept:
+
+* predefined SL and multiple TP levels
+
+New additions:
+
+* multiple take profits (TP1, TP2, TP3) fileciteturn18file1
+* ATR-based stop loss
+* visual risk/reward zones
+
+Insight:
+
+* execution structure is as important as entry
+
+### 12.3 Statistical Mean Reversion
+
+Concept:
+
+* price deviations measured statistically (not visually)
+
+New additions:
+
+* Z-score based entries fileciteturn18file13
+* probability-based reversion (68-95-99 rule)
+* extreme bands (1.618 levels)
+
+Insight:
+
+* moves beyond simple RSI → true probabilistic framework
+
+### 12.4 VWAP / Anchored Fair Value
+
+Concept:
+
+* price relative to "fair value" (VWAP)
+
+New additions:
+
+* anchored VWAP by timeframe fileciteturn18file13
+* institutional reference levels
+
+Usage:
+
+* mean reversion around VWAP
+* trailing stop for trend strategies
+
+### 12.5 Adaptive Volatility Bands
+
+Concept:
+
+* dynamic support/resistance based on volatility
+
+New additions:
+
+* Fibonacci-weighted volatility bands fileciteturn18file13
+* equilibrium vs expansion vs extreme zones
+
+Insight:
+
+* replaces static levels with adaptive structure
+
+### 12.6 Institutional / Smart Money Concepts (SMC)
+
+Concept:
+
+* markets driven by liquidity and institutional order flow
+
+New additions:
+
+* order blocks
+* fair value gaps
+* liquidity sweeps fileciteturn18file11
+
+Insight:
+
+* focuses on why price moves, not just indicators
+
+### 12.7 Adaptive Trend Detection
+
+Concept:
+
+* dynamically find best trend structure
+
+New additions:
+
+* regression-based channel selection fileciteturn18file10
+* multi-period evaluation
+
+Insight:
+
+* avoids fixed lookback bias
+
+---
+
+## 13. Updated System Insight
+
+Most blogs repeat the same surface ideas.
+
+Real unique additions identified:
+
+* statistical framing (Z-score, probability)
+* structured execution (multi TP / SL)
+* adaptive structures (VWAP, channels, volatility bands)
+* institutional lens (SMC)
+
+Everything else is:
+
+* variations of mean reversion
+* variations of momentum
+
+---
+
+## 14. Next Evolution Direction
+
+System should evolve toward:
+
+* probabilistic decision making (not threshold-based)
+* adaptive structures (VWAP, volatility bands)
+* structured execution (multi TP/SL)
+* regime-aware + structure-aware hybrid system
+
+This document will continue to evolve as new concepts are identified.
+
+---
+
+## 15. Practical Next Step
+
+The immediate next step for this project is not to add new indicators.
+
+It is to add a structure-aware regime layer that can control when existing strategy components are allowed to act.
+
+Why this comes first:
+
+* the current system still drifts toward buy-and-hold behavior when DCA keeps accumulating
+* swing activity is too sparse to offset that drift
+* portfolio behavior is being driven more by exposure accumulation than by regime-aware decision making
+
+### 15.1 Structure-Aware Regime Model
+
+The next regime layer should be based on market structure rather than indicator thresholds alone.
+
+Target sequence:
+
+* bullish:
+  * `HH -> HL -> HH -> HL`
+* weakening_bull:
+  * break of prior `HL`
+* bearish_confirmed:
+  * lower high after weakness
+  * then break of prior `LL`
+* sideways:
+  * range high / range low
+  * avoid interpreting every internal swing as trend structure
+
+System meaning:
+
+* break of `HL` = trend weakening
+* break of `LL` = bearish confirmation
+* no clean continuation = range / no trend
+
+### 15.2 Concrete Regime Permissions
+
+Bullish:
+
+* allow DCA
+* allow swing entries
+* allow normal swing exits
+
+Weakening Bull:
+
+* reduce or pause DCA
+* allow only selective swing entries
+* tighten risk
+
+Bearish Confirmed:
+
+* disable DCA
+* disable new long swing entries
+* allow only exits, de-risking, and defensive actions
+
+Sideways:
+
+* allow controlled mean reversion
+* keep momentum swing selective or disabled
+* treat as a range, not as trend continuation
+
+### 15.3 Ordered Implementation Plan
+
+Phase 1:
+
+* add swing-point extraction
+* classify structure states
+* transition regime from structure, with indicators as confirmation
+
+Phase 2:
+
+* gate DCA by regime
+* add max BTC allocation cap
+* add DCA pause logic tied to structure and exposure
+
+Phase 3:
+
+* add portfolio-level de-risking
+* add exposure caps
+* add partial sell / rebalance rules
+
+Phase 4:
+
+* revisit swing strictness only after the above
+* verify swing contributes incremental PnL beyond DCA
+
+This order matters more than adding more research concepts at this stage.
+
+### 15.4 Current Implementation Status
+
+The first pass of this direction is now live:
+
+* structure-aware regime classification exists
+* `bearish` blocks new DCA buys by default
+* `weakening_bull` reduces DCA order size instead of keeping blind full-size accumulation
+* BTC allocation cap is enforced before DCA adds more exposure
+* DCA can now emit partial rebalance sells to reduce base BTC exposure when the portfolio is too BTC-heavy for `weakening_bull` or `bearish`
+* new long swing entries are now blocked by default outside `bullish`, while existing swing positions can still exit
+
+This is still an early control layer, not a full portfolio-intent engine.
+
+Still missing:
+
+* broader portfolio-level de-risking beyond DCA inventory
+* explicit non-DCA rebalance rules
+* richer swing permissions than the current default block/allow model

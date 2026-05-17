@@ -4,9 +4,12 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .venv/
+config/runtime_settings.json
+config/runtime_settings_audit.jsonl
 venv/
 dist/
 build/
 *.pyc
 logs
 data_lake/
+.*

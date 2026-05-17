@@ -8,8 +8,8 @@ from datetime import UTC, datetime
 from app.config.schema import AppConfig
 from app.data.parquet_market_data import ParquetMarketDataClient
 from app.features.indicators import compute_indicator_bundle
-from app.features.regime_features import detect_market_regime
-from app.utils.models import Candle, FeatureSet, MarketRegime
+from app.features.regime_features import detect_market_regime, detect_regime_score
+from app.utils.models import Candle, FeatureSet, MarketRegime, RegimeScore
 
 
 class MarketDataService:
@@ -40,6 +40,10 @@ class MarketDataService:
         """Compute the feature set for the current candles."""
         return compute_indicator_bundle(candles)
 
-    def detect_regime(self, features: FeatureSet) -> MarketRegime:
+    def detect_regime(self, candles: list[Candle], features: FeatureSet) -> MarketRegime:
         """Detect the current market regime."""
-        return detect_market_regime(features)
+        return detect_market_regime(candles, features)
+
+    def detect_regime_score(self, candles: list[Candle], features: FeatureSet) -> RegimeScore:
+        """Detect the scored market regime."""
+        return detect_regime_score(candles, features)

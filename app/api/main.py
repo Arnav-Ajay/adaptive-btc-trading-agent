@@ -4,23 +4,81 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from html import escape
+from pathlib import Path
 from statistics import mean
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
+from pydantic import BaseModel
 
 from app.backtest.engine import BacktestEngine
 from app.backtest.history import save_backtest_result
 from app.api.state_reader import load_dashboard_state
 from app.data.parquet_market_data import ParquetMarketDataClient
-from app.config.settings import load_config
+from app.config.settings import _append_runtime_audit, load_config
+from app.evaluation.engine import EvaluationEngine
+from app.evaluation.history import save_evaluation_result
+from app.features.regime_features import extract_swing_points
+from app.strategies.profiles import STRATEGY_PROFILES, normalize_strategy_profile, strategy_profile_label
 from app.simulation.engine import SimulationEngine
 from app.simulation.history import save_simulation_result
+from app.utils.models import Candle
+
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Adaptive BTC Trading Agent", version="0.1.0")
+
+
+class LLMSettingsUpdate(BaseModel):
+    """Payload for updating dashboard-managed LLM runtime settings."""
+
+    enabled: bool
+
+
+def _runtime_settings_path(config) -> Path:
+    """Return the path used for dashboard-managed runtime overrides."""
+    return Path(config.env.get("RUNTIME_SETTINGS_PATH", "config/runtime_settings.json"))
+
+
+def _load_runtime_settings(config) -> dict[str, object]:
+    """Load persisted runtime settings if they exist."""
+    path = _runtime_settings_path(config)
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _persist_llm_enabled(config, enabled: bool) -> dict[str, object]:
+    """Persist the dashboard-managed LLM toggle to the runtime settings file."""
+    path = _runtime_settings_path(config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    previous_payload = _load_runtime_settings(config)
+    payload = dict(previous_payload)
+    llm_settings = dict(payload.get("llm", {})) if isinstance(payload.get("llm", {}), dict) else {}
+    previous_enabled = bool(llm_settings.get("enabled", config.llm.enabled))
+    llm_settings["enabled"] = bool(enabled)
+    payload["llm"] = llm_settings
+    payload["updated_at"] = datetime.now(UTC).replace(microsecond=0).isoformat()
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    audit_path = Path(config.env.get("RUNTIME_SETTINGS_AUDIT_PATH", "config/runtime_settings_audit.jsonl"))
+    audit_record = {
+        "recorded_at": payload["updated_at"],
+        "setting": "llm.enabled",
+        "previous_value": previous_enabled,
+        "new_value": bool(enabled),
+        "source": "dashboard",
+    }
+    _append_runtime_audit(audit_path, audit_record)
+    logger.info("LLM_ENABLED changed: %s -> %s", previous_enabled, bool(enabled))
+    return payload
 
 
 def _nav(active: str) -> str:
@@ -40,6 +98,7 @@ def _nav(active: str) -> str:
       <nav class="nav">
         <a class="{cls('bitcoin')}" href="/bitcoin">Bitcoin</a>
         <a class="{cls('trades')}" href="/trades">Trades</a>
+        <a class="{cls('structure')}" href="/structure">Structure</a>
       </nav>
     </header>
     """
@@ -91,9 +150,14 @@ def _base_html(title: str, active: str, body: str, script: str = "") -> str:
           .footer-meta {{ display:flex; gap:.65rem; align-items:center; flex-wrap:wrap; }}
           .footer-sep {{ color:#98a2b3; }}
           .footer a {{ color:#1d4ed8; text-decoration:none; font-weight:600; }}
-          .status-strip {{ display:grid; grid-template-columns:repeat(5,1fr); gap:.8rem; margin-bottom:1rem; }}
+          .status-strip {{ display:grid; grid-template-columns:repeat(6,1fr); gap:.8rem; margin-bottom:1rem; }}
           .status-chip {{ padding:.9rem 1rem; border-radius:18px; background:rgba(255,255,255,.72); border:1px solid rgba(217,225,234,.9); box-shadow:0 14px 28px rgba(16,24,40,.06); }}
           .status-chip .status-value {{ margin-top:.22rem; font-weight:700; font-size:1.02rem; }}
+          .toggle-group {{ display:flex; gap:.55rem; flex-wrap:wrap; margin-top:.8rem; }}
+          .toggle-option {{ display:inline-flex; align-items:center; gap:.45rem; padding:.6rem .85rem; border-radius:999px; border:1px solid #d0d8e2; background:#eef2f7; color:#475467; font-weight:700; cursor:pointer; user-select:none; }}
+          .toggle-option input {{ margin:0; }}
+          .toggle-option.active {{ background:#fff; color:#132033; border-color:#b9c6d8; box-shadow:0 6px 14px rgba(16,24,40,.08); }}
+          .toggle-status {{ margin-top:.6rem; color:#667085; font-size:.9rem; line-height:1.45; }}
           .btc-layout {{ display:grid; grid-template-columns:minmax(0,1.45fr) 340px; gap:1rem; }}
           .btc-main {{ display:grid; gap:1rem; }}
           .market-card {{ padding:0; overflow:hidden; background:linear-gradient(145deg,#0f1724 0%,#15283e 58%,#1f4a73 100%); color:#f5f9ff; border:none; }}
@@ -116,6 +180,8 @@ def _base_html(title: str, active: str, body: str, script: str = "") -> str:
           .toolbar-block {{ display:grid; gap:.35rem; }}
           .toolbar-label {{ color:#667085; font-size:.76rem; font-weight:700; text-transform:uppercase; letter-spacing:.05em; }}
           .segmented {{ display:flex; gap:.45rem; flex-wrap:wrap; }}
+          .decision-toolbar {{ display:flex; justify-content:space-between; align-items:center; gap:.9rem; flex-wrap:wrap; margin-top:.8rem; }}
+          .decision-toolbar-group {{ display:flex; gap:.45rem; flex-wrap:wrap; align-items:center; }}
           .seg-btn {{ border-radius:999px; border:1px solid #d0d8e2; background:#eef2f7; color:#475467; font-weight:700; padding:.6rem .95rem; cursor:pointer; }}
           .seg-btn.active {{ background:#fff; color:#132033; border-color:#b9c6d8; box-shadow:0 6px 14px rgba(16,24,40,.08); }}
           .filter-grid {{ display:none; grid-template-columns:1fr 1fr auto; gap:.7rem; align-items:end; margin-bottom:.7rem; }}
@@ -174,7 +240,7 @@ def _base_html(title: str, active: str, body: str, script: str = "") -> str:
           .history-link-meta {{ color:#667085; font-size:.76rem; text-transform:uppercase; letter-spacing:.05em; }}
           .history-link-main {{ font-weight:800; font-size:1rem; }}
           .history-link-sub {{ color:#667085; font-size:.86rem; }}
-          @media (max-width:1050px) {{ .banner,.page-grid,.subgrid,.status-strip,.btc-layout,.market-stats,.chart-toolbar-grid,.filter-grid,.trade-layout,.trade-banner,.trade-split {{ grid-template-columns:1fr; }} .footer {{ flex-direction:column; align-items:flex-start; }} .market-price-row,.market-top,.trade-hero-top {{ flex-direction:column; align-items:flex-start; }} }}
+          @media (max-width:1050px) {{ .banner,.page-grid,.subgrid,.status-strip,.btc-layout,.market-stats,.chart-toolbar-grid,.filter-grid,.trade-layout,.trade-banner,.trade-split {{ grid-template-columns:1fr; }} .footer {{ flex-direction:column; align-items:flex-start; }} .market-price-row,.market-top,.trade-hero-top,.decision-toolbar {{ flex-direction:column; align-items:flex-start; }} }}
         </style>
       </head>
       <body><div class="shell">{_nav(active)}{body}<footer class="footer"><div>Built by <strong>Arnav</strong> / <strong>Kaijo</strong></div><div class="footer-meta"><span>Adaptive BTC Trading Agent</span><span class="footer-sep">|</span><a href="https://github.com/Arnav-Ajay" target="_blank" rel="noreferrer">GitHub</a></div></footer></div>{script}</body>
@@ -258,6 +324,58 @@ def _volatility_label(atr: float, price: float) -> str:
     return "Low"
 
 
+def _label_swing_points(
+    candles: list[dict[str, object]],
+    *,
+    lookback: int,
+    pivot_span: int,
+    min_move_percent: float,
+) -> list[dict[str, object]]:
+    """Label swing highs/lows as HH/HL/LH/LL for debug visualization."""
+    if not candles:
+        return []
+    parsed = [
+        Candle(
+            timestamp=datetime.fromisoformat(str(candle["timestamp"])),
+            open=float(candle["open"]),
+            high=float(candle["high"]),
+            low=float(candle["low"]),
+            close=float(candle["close"]),
+            volume=float(candle["volume"]),
+        )
+        for candle in candles
+    ]
+    swings = extract_swing_points(
+        parsed,
+        lookback=lookback,
+        pivot_span=pivot_span,
+        min_move_percent=min_move_percent,
+        enforce_alternation=True,
+    )
+    labeled: list[dict[str, object]] = []
+    last_high = None
+    last_low = None
+    for swing in swings:
+        label = "H" if swing.kind == "high" else "L"
+        if swing.kind == "high" and last_high is not None:
+            label = "HH" if swing.price > last_high else "LH" if swing.price < last_high else "H"
+        if swing.kind == "low" and last_low is not None:
+            label = "HL" if swing.price > last_low else "LL" if swing.price < last_low else "L"
+        if swing.kind == "high":
+            last_high = swing.price
+        else:
+            last_low = swing.price
+        labeled.append(
+            {
+                "timestamp": swing.timestamp,
+                "price": swing.price,
+                "label": label,
+                "kind": swing.kind,
+            }
+        )
+    return labeled
+
+
 def _decision_breakdown(latest_cycle: dict[str, object] | None, latest_trace: dict[str, object] | None) -> dict[str, object]:
     """Turn the raw trace into a more readable decision narrative."""
     if not latest_cycle:
@@ -291,6 +409,27 @@ def _decision_breakdown(latest_cycle: dict[str, object] | None, latest_trace: di
         return ""
 
     def _dca_skip_lines() -> list[str]:
+        if any(item == "skip:dca_regime_blocked" for item in trace):
+            regime = _trace_value("regime=") or "unknown"
+            return [
+                "DCA is paused in the current market regime.",
+                f"Current regime = {regime}.",
+            ]
+        if any(item == "skip:btc_allocation_cap_reached" for item in trace):
+            allocation = _trace_value("btc_allocation_percent=")
+            allocation_cap = _trace_value("max_btc_allocation_percent=")
+            reason_lines = ["BTC exposure has reached the configured allocation cap."]
+            if allocation and allocation_cap:
+                reason_lines.append(
+                    f"Current BTC allocation is {float(allocation):.2f}% vs cap {float(allocation_cap):.2f}%."
+                )
+            return reason_lines
+        if any(item == "skip:dca_order_below_minimum_size" for item in trace):
+            size = _trace_value("target_order_size_usd=")
+            reason_lines = ["Remaining DCA headroom is too small to place a meaningful order."]
+            if size:
+                reason_lines.append(f"Allowed order size was only ${float(size):.2f}.")
+            return reason_lines
         latest_buy_fill = next(
             (item for item in trace if "latest_buy_fill_price=" in item),
             "",
@@ -312,11 +451,34 @@ def _decision_breakdown(latest_cycle: dict[str, object] | None, latest_trace: di
         reason_lines.extend([threshold, observed])
         return [line for line in reason_lines if line]
 
+    def _dca_rebalance_lines() -> list[str]:
+        regime = _trace_value("regime=") or "unknown"
+        allocation = _trace_value("btc_allocation_percent=")
+        target = _trace_value("target_btc_allocation_percent=")
+        tolerance = _trace_value("rebalance_tolerance_percent=")
+        reason_lines = ["BTC exposure was above the regime-aware target, so the base DCA position was reduced."]
+        if regime:
+            reason_lines.append(f"Current regime = {regime}.")
+        if allocation and target:
+            reason_lines.append(
+                f"BTC allocation was {float(allocation):.2f}% vs target {float(target):.2f}%."
+            )
+        if tolerance:
+            reason_lines.append(f"Rebalance tolerance was {float(tolerance):.2f}%.")
+        return reason_lines
+
     def _swing_check_lines() -> list[str]:
         return [
             item.replace("check:", "").replace(" actual=", " = ").replace(" fast=", " | fast=").replace(" slow=", " slow=")
             for item in trace
             if item.startswith("check:")
+        ]
+
+    def _swing_regime_lines() -> list[str]:
+        regime = _trace_value("regime=") or "unknown"
+        return [
+            "New long swing entries are disabled in the current market regime.",
+            f"Current regime = {regime}.",
         ]
 
     if accepted_executions:
@@ -411,6 +573,17 @@ def _decision_breakdown(latest_cycle: dict[str, object] | None, latest_trace: di
                 "interpretation": "The swing layer cut the trade early because momentum failed to follow through after the initial entry.",
                 "timestamp": recorded_at,
             }
+        if reason.startswith("dca_rebalance_sell:"):
+            return {
+                "headline": f"Decision: {decision}",
+                "decision": decision,
+                "reason_lines": [
+                    *_dca_rebalance_lines(),
+                    f"Exit executed at ${price:.2f} for ${size_usd:.2f}.",
+                ],
+                "interpretation": "The base DCA layer trimmed BTC exposure to move the portfolio back toward its regime-aware allocation target.",
+                "timestamp": recorded_at,
+            }
         if reason in {"initial_dca_entry", "price_drop_dca_entry", "dca_drop_buy"}:
             if reason == "initial_dca_entry":
                 return {
@@ -452,12 +625,28 @@ def _decision_breakdown(latest_cycle: dict[str, object] | None, latest_trace: di
             "interpretation": "The hybrid strategy evaluated both DCA and swing components, but neither produced an executable trade.",
             "timestamp": recorded_at,
         }
-    if any("price_above_drop_threshold" in item for item in trace):
+    if any(
+        item == "decision:rebalance_reduce_btc_exposure"
+        or item.startswith("signal:dca_rebalance_sell")
+        or item == "skip:dca_regime_blocked"
+        or item == "skip:btc_allocation_cap_reached"
+        or item == "skip:dca_order_below_minimum_size"
+        or "price_above_drop_threshold" in item
+        for item in trace
+    ):
+        if any(item == "decision:rebalance_reduce_btc_exposure" or item.startswith("signal:dca_rebalance_sell") for item in trace):
+            return {
+                "headline": f"Decision: {decision}",
+                "decision": "SELL",
+                "reason_lines": _dca_rebalance_lines(),
+                "interpretation": "The base DCA layer decided to reduce exposure because the portfolio had become too BTC-heavy for the current regime.",
+                "timestamp": recorded_at,
+            }
         return {
             "headline": f"Decision: {decision}",
             "decision": decision,
             "reason_lines": _dca_skip_lines(),
-            "interpretation": "Market is not favorable for accumulation yet, so the DCA layer is waiting for a deeper dip.",
+            "interpretation": "The DCA layer stayed inactive because either market structure, allocation limits, or price conditions did not justify another accumulation buy.",
             "timestamp": recorded_at,
         }
     if any("momentum_conditions_not_met" in item for item in trace):
@@ -467,6 +656,14 @@ def _decision_breakdown(latest_cycle: dict[str, object] | None, latest_trace: di
             "decision": decision,
             "reason_lines": checks,
             "interpretation": "Trend exists, but the swing entry filters are not aligned strongly enough to justify a trade.",
+            "timestamp": recorded_at,
+        }
+    if any(item == "skip:swing_regime_blocked" for item in trace):
+        return {
+            "headline": f"Decision: {decision}",
+            "decision": decision,
+            "reason_lines": _swing_regime_lines(),
+            "interpretation": "The swing layer did not open a new trade because swing entries are disabled for this structure state.",
             "timestamp": recorded_at,
         }
     if any("initial_dca_entry" in item for item in trace):
@@ -553,14 +750,12 @@ def _format_trade_row(trade: dict[str, object], first_dca_buy_timestamp: str | N
     )
 
 
-def _format_decision_row(cycle: dict[str, object], breakdown: dict[str, object], hidden: bool = False) -> str:
+def _format_decision_row(cycle: dict[str, object], breakdown: dict[str, object]) -> str:
     """Render one decision-log table row."""
     execution_results = cycle.get("execution_results", [])
     execution_count = sum(1 for result in execution_results if result.get("accepted"))
     strategy_name = str(cycle.get("strategy_name", "")).replace("Strategy", "")
     row_classes = ["decision-row"]
-    if hidden:
-        row_classes.append("decision-row-hidden")
     payload = escape(
         json.dumps(
             {
@@ -573,7 +768,7 @@ def _format_decision_row(cycle: dict[str, object], breakdown: dict[str, object],
         )
     )
     return (
-        f"<tr class=\"{' '.join(row_classes)}\" data-breakdown=\"{payload}\">"
+        f"<tr class=\"{' '.join(row_classes)}\" data-breakdown=\"{payload}\" data-sort-ts=\"{escape(str(cycle.get('recorded_at', '')))}\">"
         f"<td>{escape(_format_display_timestamp(str(cycle.get('recorded_at', ''))))}</td>"
         f"<td>{escape(str(cycle.get('regime', '')).upper())}</td>"
         f"<td>{escape(strategy_name)}</td>"
@@ -589,6 +784,22 @@ def _backtest_step_breakdown(step: dict[str, object]) -> dict[str, object]:
     """Render a saved backtest step as a readable decision breakdown."""
     decision = str(step.get("decision", "n/a")).upper()
     trace = [str(line) for line in (step.get("trace") or [])]
+    if any(line == "decision:rebalance_reduce_btc_exposure" or line.startswith("signal:dca_rebalance_sell") for line in trace):
+        return {
+            "headline": "Decision: SELL",
+            "decision": "SELL",
+            "reason_lines": trace or ["No replay trace recorded for this step."],
+            "interpretation": "The replay engine trimmed base BTC exposure because the portfolio was above its regime-aware allocation target.",
+            "timestamp": _format_display_timestamp(str(step.get("timestamp", ""))),
+        }
+    if any(line == "skip:swing_regime_blocked" for line in trace):
+        return {
+            "headline": f"Decision: {decision}",
+            "decision": decision,
+            "reason_lines": trace or ["No replay trace recorded for this step."],
+            "interpretation": "The swing layer did not open a new trade because long swing entries were disabled for the current regime.",
+            "timestamp": _format_display_timestamp(str(step.get("timestamp", ""))),
+        }
     interpretation_map = {
         "BUY": "The replay engine found an executable entry and recorded a fill under the historical execution model.",
         "SELL": "The replay engine closed exposure during this step, usually from a stop-loss or explicit exit condition.",
@@ -608,15 +819,81 @@ def _backtest_step_breakdown(step: dict[str, object]) -> dict[str, object]:
     }
 
 
-def _format_backtest_decision_row(step: dict[str, object], hidden: bool = False) -> str:
+def _swing_inactivity_summary(steps: list[dict[str, object]]) -> list[str]:
+    """Summarize which swing-entry gates blocked trades most often."""
+    invalid_price_or_atr = 0
+    rsi_blocked = 0
+    macd_blocked = 0
+    ema_blocked = 0
+    cash_blocked = 0
+    open_position_hold = 0
+
+    for step in steps:
+        trace = [str(line) for line in (step.get("trace") or [])]
+        if any(line.startswith("skip:invalid_price_or_atr") for line in trace):
+            invalid_price_or_atr += 1
+            continue
+
+        rsi_line = next((line for line in trace if line.startswith("check:rsi_lt_")), "")
+        if rsi_line:
+            try:
+                threshold_part, actual_part = rsi_line.replace("check:rsi_lt_", "", 1).split(" actual=")
+                if float(actual_part) >= float(threshold_part):
+                    rsi_blocked += 1
+            except ValueError:
+                pass
+
+        macd_line = next((line for line in trace if line.startswith("check:macd_histogram_gt_0 actual=")), "")
+        if macd_line:
+            try:
+                macd_value = float(macd_line.split(" actual=", 1)[1])
+                if macd_value <= 0:
+                    macd_blocked += 1
+            except ValueError:
+                pass
+
+        ema_line = next((line for line in trace if line.startswith("check:ema_fast_gt_ema_slow fast=")), "")
+        if ema_line:
+            try:
+                values = ema_line.replace("check:ema_fast_gt_ema_slow fast=", "", 1).split(" slow=")
+                if len(values) == 2 and float(values[0]) <= float(values[1]):
+                    ema_blocked += 1
+            except ValueError:
+                pass
+
+        cash_line = next((line for line in trace if line.startswith("check:available_cash_usd=")), "")
+        if cash_line:
+            try:
+                if float(cash_line.split("=", 1)[1]) <= 0:
+                    cash_blocked += 1
+            except ValueError:
+                pass
+
+        if any(line.startswith("hold:open_swing_position") for line in trace):
+            open_position_hold += 1
+
+    blocker_counts = [
+        ("RSI gate blocked entry", rsi_blocked),
+        ("MACD histogram gate blocked entry", macd_blocked),
+        ("EMA trend gate blocked entry", ema_blocked),
+        ("Invalid price/ATR blocked entry", invalid_price_or_atr),
+        ("No cash available", cash_blocked),
+        ("Existing swing position prevented new entry", open_position_hold),
+    ]
+    blocker_counts = [(label, count) for label, count in blocker_counts if count > 0]
+    blocker_counts.sort(key=lambda item: item[1], reverse=True)
+    if not blocker_counts:
+        return ["No dominant blocker was detected from the recorded swing traces."]
+    return [f"{label}: {count} steps" for label, count in blocker_counts[:4]]
+
+
+def _format_backtest_decision_row(step: dict[str, object]) -> str:
     """Render one replay-step row for the backtest decision log."""
     row_classes = ["backtest-decision-row"]
-    if hidden:
-        row_classes.append("decision-row-hidden")
     breakdown = _backtest_step_breakdown(step)
     payload = escape(json.dumps(breakdown))
     return (
-        f"<tr class=\"{' '.join(row_classes)}\" data-breakdown=\"{payload}\">"
+        f"<tr class=\"{' '.join(row_classes)}\" data-breakdown=\"{payload}\" data-sort-ts=\"{escape(str(step.get('timestamp', '')))}\">"
         f"<td>{escape(_format_display_timestamp(str(step.get('timestamp', ''))))}</td>"
         f"<td>{escape(str(step.get('regime', 'n/a')).upper())}</td>"
         f"<td>{escape(str(step.get('strategy_name', 'n/a')).replace('Strategy', ''))}</td>"
@@ -626,6 +903,15 @@ def _format_backtest_decision_row(step: dict[str, object], hidden: bool = False)
         f"<td>${float(step.get('equity_usd', 0.0)):.2f}</td>"
         "</tr>"
     )
+
+
+def _visible_backtest_steps(steps: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Hide synthetic carry-forward rows after a portfolio-guard halt from the log table."""
+    return [
+        step
+        for step in steps
+        if "hold:max_drawdown_guard_active" not in [str(line) for line in (step.get("trace") or [])]
+    ]
 
 
 def _decision_matches_filter(decision_value: str, filter_value: str) -> bool:
@@ -729,6 +1015,7 @@ def _configured_backtest_config(
     fee_pct: float,
     spread_pct: float,
     slippage_pct: float,
+    decision_cadence_minutes: int,
 ) -> object:
     """Clone config and apply backtest-specific execution-cost overrides."""
     config = copy.deepcopy(base_config)
@@ -736,6 +1023,7 @@ def _configured_backtest_config(
     config.execution.fee_pct = fee_pct
     config.execution.spread_pct = spread_pct
     config.execution.slippage_pct = slippage_pct
+    config.runtime.decision_cadence_minutes = decision_cadence_minutes
     return config
 
 
@@ -784,6 +1072,39 @@ def api_trading() -> dict[str, object]:
     return {"portfolio_snapshot": state["portfolio_snapshot"], "latest_cycle": state["latest_cycle"], "latest_trace": state["latest_trace"], "latest_trade": state["latest_trade"], "recent_trades": state["recent_trades"]}
 
 
+@app.get("/api/settings")
+def api_settings() -> dict[str, object]:
+    """Return the current dashboard-managed runtime settings."""
+    config = load_config()
+    runtime_settings = _load_runtime_settings(config)
+    llm_settings = runtime_settings.get("llm", {}) if isinstance(runtime_settings.get("llm", {}), dict) else {}
+    return {
+        "llm": {
+            "enabled": bool(config.llm.enabled),
+            "model": config.llm.model,
+            "override_enabled": bool(llm_settings.get("enabled", config.llm.enabled)),
+            "updated_at": runtime_settings.get("updated_at"),
+        },
+        "runtime_settings_path": str(_runtime_settings_path(config)),
+    }
+
+
+@app.put("/api/settings/llm")
+def update_llm_settings(payload: LLMSettingsUpdate) -> dict[str, object]:
+    """Persist the dashboard LLM toggle and return the updated state."""
+    config = load_config()
+    updated = _persist_llm_enabled(config, payload.enabled)
+    refreshed = load_config()
+    return {
+        "llm": {
+            "enabled": bool(refreshed.llm.enabled),
+            "model": refreshed.llm.model,
+            "override_enabled": bool(updated.get("llm", {}).get("enabled", refreshed.llm.enabled)),
+            "updated_at": updated.get("updated_at"),
+        }
+    }
+
+
 @app.get("/api/candles")
 def api_candles(limit: int = Query(default=500, ge=10, le=2000), start: str | None = None, end: str | None = None) -> dict[str, object]:
     """Return recent candle data for dashboard charts."""
@@ -806,12 +1127,14 @@ def api_trades(limit: int = Query(default=25, ge=1, le=250)) -> dict[str, object
 def api_backtest(
     symbol: str | None = None,
     interval: str = Query(default="30m"),
+    strategy: str = Query(default="hybrid_current"),
     start: str | None = None,
     end: str | None = None,
     execution_cost_preset: str = Query(default="simple"),
     fee_pct: float = Query(default=0.001, ge=0.0, le=0.1),
     spread_pct: float = Query(default=0.0005, ge=0.0, le=0.1),
     slippage_pct: float = Query(default=0.0005, ge=0.0, le=0.1),
+    decision_cadence_minutes: int = Query(default=30, ge=1),
 ) -> dict[str, object]:
     """Run a historical backtest over parquet candles and return summary output."""
     base_config = load_config()
@@ -821,8 +1144,10 @@ def api_backtest(
         fee_pct=fee_pct,
         spread_pct=spread_pct,
         slippage_pct=slippage_pct,
+        decision_cadence_minutes=decision_cadence_minutes,
     )
     engine = BacktestEngine(config)
+    strategy_profile = normalize_strategy_profile(strategy)
     end_at = _parse_optional_iso_datetime(end)
     start_at = _parse_optional_iso_datetime(start)
     if start_at is None:
@@ -833,13 +1158,16 @@ def api_backtest(
             interval=interval,
             start_at=start_at,
             end_at=end_at,
+            strategy_profile=strategy_profile,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     payload = save_backtest_result(config.data.data_lake_path, result)
     return {
         "symbol": payload["symbol"],
+        "strategy_profile": payload["strategy_profile"],
         "interval": payload["interval"],
+        "decision_cadence_minutes": payload["decision_cadence_minutes"],
         "start_at": payload["start_at"],
         "end_at": payload["end_at"],
         "candles_processed": payload["candles_processed"],
@@ -882,6 +1210,44 @@ def api_backtest(
     }
 
 
+@app.get("/api/evaluation")
+def api_evaluation(
+    symbol: str | None = None,
+    interval: str = Query(default="30m"),
+    strategy: str = Query(default="hybrid_current"),
+    start: str | None = None,
+    end: str | None = None,
+    modes: str = Query(default="baseline,llm,random_20,rsi_70,volatility_2_5"),
+    random_block_rate: float = Query(default=0.2, ge=0.0, le=1.0),
+    rsi_block_threshold: float = Query(default=70.0, ge=0.0, le=100.0),
+    volatility_block_threshold_percent: float = Query(default=2.5, ge=0.0, le=100.0),
+) -> dict[str, object]:
+    """Run counterfactual evaluation modes against the same historical window."""
+    base_config = load_config()
+    mode_list = [mode.strip() for mode in modes.split(",") if mode.strip()]
+    engine = EvaluationEngine(base_config)
+    end_at = _parse_optional_iso_datetime(end)
+    start_at = _parse_optional_iso_datetime(start)
+    if start_at is None:
+        start_at = _default_backtest_start(interval=interval, end_at=end_at or datetime.now(UTC))
+    try:
+        result = engine.run(
+            symbol=symbol or base_config.trading.symbol,
+            interval=interval,
+            start_at=start_at,
+            end_at=end_at,
+            strategy_profile=normalize_strategy_profile(strategy),
+            modes=mode_list,
+            random_block_rate=random_block_rate,
+            rsi_block_threshold=rsi_block_threshold,
+            volatility_block_threshold_percent=volatility_block_threshold_percent,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    payload = save_evaluation_result(base_config.data.data_lake_path, result)
+    return payload
+
+
 @app.get("/", response_class=HTMLResponse)
 def index() -> RedirectResponse:
     """Redirect to the Bitcoin market page."""
@@ -906,6 +1272,7 @@ def bitcoin_page() -> str:
     )
     ingestion = state["ingestion_state"] or {}
     latest_cycle = state["latest_cycle"] or {}
+    llm_state = state.get("llm_state", {})
     portfolio = (state["portfolio_snapshot"] or {}).get("snapshot", {})
     portfolio_metrics = _portfolio_metrics(portfolio, config.execution.initial_cash_usd)
     btc_summary = _btc_window_summary(state["recent_candles"])
@@ -921,6 +1288,23 @@ def bitcoin_page() -> str:
     ) * 100
     pnl_class = "value-positive" if portfolio_metrics["total_pnl"] >= 0 else "value-negative"
     position_state = "LONG" if portfolio_metrics["btc_units"] > 0 else "FLAT"
+    llm_enabled = bool(llm_state.get("enabled", config.llm.enabled))
+    llm_state_label = "ENABLED" if llm_enabled else "DISABLED"
+    llm_state_class = "ok" if llm_enabled else "warn"
+    llm_toggle_help = (
+        "The optional LLM review layer is currently enabled and will review signals before execution."
+        if llm_enabled
+        else "The deterministic strategy stack is running without LLM review."
+    )
+    llm_cycle_status = str(llm_state.get("status", "unknown"))
+    llm_cycle_used = bool(llm_state.get("used_in_last_cycle", False))
+    llm_cycle_decision = llm_state.get("decision") or {}
+    llm_cycle_decision_text = ""
+    if isinstance(llm_cycle_decision, dict) and llm_cycle_decision.get("action"):
+        llm_cycle_decision_text = (
+            f"{str(llm_cycle_decision.get('action', '')).upper()} "
+            f"({float(llm_cycle_decision.get('confidence', 0.0)):.2f})"
+        )
 
     candles_payload = json.dumps(state["chart_candles"])
     trades_payload = json.dumps(state["recent_trades"])
@@ -933,6 +1317,7 @@ def bitcoin_page() -> str:
       <div class="status-chip"><div class="label">Trade Confidence</div><div class="status-value">{confidence_score:.2f} ({escape(confidence_label)})</div></div>
       <div class="status-chip"><div class="label">Freshness</div><div class="status-value"><span class="pill {freshness_class}">{escape(freshness_label)}</span></div></div>
       <div class="status-chip"><div class="label">Latest Candle</div><div class="status-value">{escape(latest_ingested_label)}</div></div>
+      <div class="status-chip"><div class="label">LLM Overlay</div><div class="status-value"><span class="pill {llm_state_class}">{llm_state_label}</span></div></div>
     </section>
     <section class="btc-layout">
       <div class="btc-main">
@@ -1035,6 +1420,24 @@ def bitcoin_page() -> str:
             <div class="mini-row"><span class="mini-label">PnL</span><span class="mini-value {pnl_class}">${portfolio_metrics["total_pnl"]:+,.2f} ({pnl_percent:+.2f}%)</span></div>
           </div>
         </section>
+        <section class="side-card">
+          <div class="label">LLM Overlay</div>
+          <div class="side-title">Optional Decision Layer</div>
+          <div class="chart-note">Deterministic trading stays active whether this layer is enabled or not.</div>
+          <div class="mini-row" style="margin-top:.8rem;"><span class="mini-label">Last Cycle</span><span class="mini-value">{escape(llm_cycle_status)} / {"used" if llm_cycle_used else "fallback"}</span></div>
+          <div class="mini-row"><span class="mini-label">LLM Decision</span><span class="mini-value">{escape(llm_cycle_decision_text or "n/a")}</span></div>
+          <div class="toggle-group" id="llm-toggle-group">
+            <label class="toggle-option{'' if llm_enabled else ' active'}" for="llm-disabled">
+              <input type="radio" id="llm-disabled" name="llmEnabled" value="false" {'checked' if not llm_enabled else ''} />
+              Disabled
+            </label>
+            <label class="toggle-option{ ' active' if llm_enabled else '' }" for="llm-enabled">
+              <input type="radio" id="llm-enabled" name="llmEnabled" value="true" {'checked' if llm_enabled else ''} />
+              Enabled
+            </label>
+          </div>
+          <div class="toggle-status" id="llm-toggle-status">{escape(llm_toggle_help)}</div>
+        </section>
       </aside>
     </section>
     <script id="candles-data" type="application/json">{candles_payload}</script>
@@ -1062,8 +1465,12 @@ def bitcoin_page() -> str:
       const marketEmaSpreadEl = document.getElementById("market-ema-spread");
       const rangeButtons = [...document.querySelectorAll("[data-range]")];
       const typeButtons = [...document.querySelectorAll("[data-chart-type]")];
+      const llmToggleInputs = [...document.querySelectorAll('input[name="llmEnabled"]')];
+      const llmToggleStatus = document.getElementById("llm-toggle-status");
+      const llmToggleOptions = [...document.querySelectorAll(".toggle-option")];
       let activeRange = "1440";
       let activeType = "line";
+      let llmToggleBusy = false;
 
       function sourceIntervalForRange(range) {{
         if (range === "60") return "1m";
@@ -1091,6 +1498,46 @@ def bitcoin_page() -> str:
         if (range === "240" || range === "480") return "%b %-d\\n%-I:%M %p";
         if (range === "1440") return "%b %-d\\n%-I:%M %p";
         return "%b %-d\\n%Y";
+      }}
+
+      function setLlmToggleState(enabled, statusText) {{
+        llmToggleInputs.forEach((input) => {{
+          input.checked = input.value === String(enabled);
+        }});
+        llmToggleOptions.forEach((option) => {{
+          const input = option.querySelector('input[name="llmEnabled"]');
+          option.classList.toggle("active", Boolean(input && input.checked));
+        }});
+        if (llmToggleStatus && statusText) {{
+          llmToggleStatus.textContent = statusText;
+        }}
+      }}
+
+      async function updateLlmToggle(enabled) {{
+        if (llmToggleBusy) return;
+        llmToggleBusy = true;
+        setLlmToggleState(enabled, enabled ? "Saving enabled LLM review..." : "Saving disabled LLM review...");
+        try {{
+          const response = await fetch("/api/settings/llm", {{
+            method: "PUT",
+            headers: {{ "Content-Type": "application/json" }},
+            body: JSON.stringify({{ enabled }}),
+          }});
+          if (!response.ok) {{
+            throw new Error(`LLM toggle update failed: ${{response.status}}`);
+          }}
+          const payload = await response.json();
+          const nextEnabled = Boolean(payload?.llm?.enabled);
+          const nextStatus = nextEnabled
+            ? "LLM review is enabled. The deterministic strategy still runs first."
+            : "LLM review is disabled. The deterministic strategy is running on its own.";
+          setLlmToggleState(nextEnabled, nextStatus);
+        }} catch (error) {{
+          setLlmToggleState(!enabled, "Unable to update the LLM toggle. The previous setting has been restored.");
+          console.error(error);
+        }} finally {{
+          llmToggleBusy = false;
+        }}
       }}
 
       function updateIntervalUi() {{
@@ -1125,6 +1572,14 @@ def bitcoin_page() -> str:
         }}
         chartEl.innerHTML = `<div style="padding:2rem;color:#dbe7f6;">${{message}}</div>`;
       }}
+
+      llmToggleInputs.forEach((input) => {{
+        input.addEventListener("change", () => {{
+          if (!input.checked) return;
+          updateLlmToggle(input.value === "true");
+        }});
+      }});
+      setLlmToggleState({str(llm_enabled).lower()}, {json.dumps(llm_toggle_help)});
 
       function filteredCandles() {{
         const candles = currentCandles();
@@ -1457,18 +1912,155 @@ def bitcoin_page() -> str:
     return _base_html("Bitcoin | Adaptive BTC Trading Agent", "bitcoin", body, script)
 
 
+@app.get("/structure", response_class=HTMLResponse)
+def structure_page(
+    interval: str = Query(default="1m"),
+    lookback: int = Query(default=400, ge=50, le=4000),
+    pivot_span: int = Query(default=3, ge=1, le=5),
+    min_move_percent: float = Query(default=0.3, ge=0.0, le=5.0),
+) -> str:
+    """Render a debug view for HH/HL/LH/LL swing structure labeling."""
+    config = load_config()
+    client = ParquetMarketDataClient(config=config)
+    candles = client.fetch_dashboard_candles(interval=interval, limit=lookback)
+    serialized = [
+        {
+            "timestamp": candle.timestamp.replace(microsecond=0).isoformat(),
+            "open": candle.open,
+            "high": candle.high,
+            "low": candle.low,
+            "close": candle.close,
+            "volume": candle.volume,
+        }
+        for candle in candles
+    ]
+    swing_labels = _label_swing_points(
+        serialized,
+        lookback=lookback,
+        pivot_span=pivot_span,
+        min_move_percent=min_move_percent,
+    )
+    chart_width_px = max(1200, len(serialized) * 6)
+    payload = json.dumps({"candles": serialized, "swings": swing_labels})
+    body = f"""
+    <section class="panel chart-card">
+      <div class="chart-panel-head">
+        <div>
+          <div class="label">Structure Debug</div>
+          <div class="chart-title">HH / HL / LH / LL Labeling</div>
+          <div class="chart-note">Scrollable view for verifying swing labeling. Interval {escape(interval)}, lookback {lookback}, pivot span {pivot_span}.</div>
+        </div>
+      </div>
+      <form method="get" action="/structure" class="filter-grid" style="display:grid; grid-template-columns:180px 180px 180px 180px auto;">
+        <div class="field">
+          <label for="structureInterval">Interval</label>
+          <select id="structureInterval" name="interval">
+            <option value="1m" {'selected' if interval == '1m' else ''}>1m</option>
+            <option value="10m" {'selected' if interval == '10m' else ''}>10m</option>
+            <option value="30m" {'selected' if interval == '30m' else ''}>30m</option>
+            <option value="1hr" {'selected' if interval == '1hr' else ''}>1hr</option>
+            <option value="1d" {'selected' if interval == '1d' else ''}>1d</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="structureLookback">Lookback</label>
+          <input id="structureLookback" type="number" name="lookback" min="50" max="4000" step="10" value="{lookback}" />
+        </div>
+        <div class="field">
+          <label for="structurePivot">Pivot Span</label>
+          <input id="structurePivot" type="number" name="pivot_span" min="1" max="5" step="1" value="{pivot_span}" />
+        </div>
+        <div class="field">
+          <label for="structureMinMove">Min Move %</label>
+          <input id="structureMinMove" type="number" name="min_move_percent" min="0" max="5" step="0.1" value="{min_move_percent:.1f}" />
+        </div>
+        <div class="filter-actions" style="align-items:end;">
+          <button class="ghost" type="submit">Apply</button>
+        </div>
+      </form>
+      <div class="trade-chart-frame" style="margin-top:.9rem;">
+        <div style="overflow-x:auto;">
+          <div id="structureChart" class="chart-surface" style="height:520px; width:{chart_width_px}px;"></div>
+        </div>
+      </div>
+    </section>
+    <script id="structure-data" type="application/json">{payload}</script>
+    """
+    script = """
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+    <script>
+      const payload = JSON.parse(document.getElementById("structure-data").textContent || "{}");
+      const candles = payload.candles || [];
+      const swings = payload.swings || [];
+      const chartEl = document.getElementById("structureChart");
+      const x = candles.map(c => c.timestamp);
+      const opens = candles.map(c => Number(c.open));
+      const highs = candles.map(c => Number(c.high));
+      const lows = candles.map(c => Number(c.low));
+      const closes = candles.map(c => Number(c.close));
+      const swingX = swings.map(s => s.timestamp);
+      const swingY = swings.map(s => Number(s.price));
+      const swingText = swings.map(s => s.label);
+      const swingColor = swings.map(s => s.kind === "high" ? "#f59e0b" : "#3b82f6");
+      const traces = [
+        {
+          type: "candlestick",
+          x,
+          open: opens,
+          high: highs,
+          low: lows,
+          close: closes,
+          increasing: { line: { color: "#16c784", width: 1.2 }, fillcolor: "#16c784" },
+          decreasing: { line: { color: "#ea3943", width: 1.2 }, fillcolor: "#ea3943" },
+          whiskerwidth: 0.5,
+          hoverlabel: { namelength: 0 },
+          hovertemplate:
+            "%{x|%b %d, %-I:%M %p}<br>" +
+            "Open: %{open:$,.2f}<br>" +
+            "High: %{high:$,.2f}<br>" +
+            "Low: %{low:$,.2f}<br>" +
+            "Close: %{close:$,.2f}<extra></extra>",
+        },
+        {
+          type: "scatter",
+          mode: "markers+text",
+          x: swingX,
+          y: swingY,
+          text: swingText,
+          textposition: "top center",
+          marker: { size: 8, color: swingColor, line: { color: "#0f172a", width: 1 } },
+          textfont: { color: "#e2e8f0", size: 12 },
+          hovertemplate: "%{x}<br>%{text} @ %{y:$,.2f}<extra></extra>",
+        },
+      ];
+      const layout = {
+        paper_bgcolor: "rgba(13,21,32,1)",
+        plot_bgcolor: "rgba(13,21,32,1)",
+        margin: { t: 24, r: 36, b: 44, l: 56, pad: 12 },
+        showlegend: false,
+        xaxis: { type: "date", showgrid: false, zeroline: false, tickfont: { color: "rgba(148,163,184,0.8)" } },
+        yaxis: { showgrid: true, gridcolor: "rgba(255,255,255,0.06)", zeroline: false, tickfont: { color: "rgba(203,213,225,0.82)" }, tickformat: "$,.0f" },
+      };
+      Plotly.react(chartEl, traces, layout, { responsive: false, displayModeBar: false, scrollZoom: true });
+    </script>
+    """
+    return _base_html("Structure | Adaptive BTC Trading Agent", "structure", body, script)
+
+
 @app.get("/trades", response_class=HTMLResponse)
 def trades_page(
     run_backtest: int = Query(default=0, ge=0, le=1),
     run_simulation: int = Query(default=0, ge=0, le=1),
     mode: str = Query(default="paper"),
     interval: str = Query(default="30m"),
+    strategy: str | None = None,
     start: str | None = None,
     end: str | None = None,
     execution_cost_preset: str = Query(default="simple"),
     fee_pct: float = Query(default=0.001, ge=0.0, le=0.1),
     spread_pct: float = Query(default=0.0005, ge=0.0, le=0.1),
     slippage_pct: float = Query(default=0.0005, ge=0.0, le=0.1),
+    decision_cadence_minutes: int = Query(default=30, ge=1),
     backtest_recorded_at: str | None = None,
     backtest_run_idx: int | None = Query(default=None, ge=0),
     simulation_run_idx: int | None = Query(default=None, ge=0),
@@ -1482,6 +2074,7 @@ def trades_page(
     view_mode = "simulation" if run_simulation else "backtest" if run_backtest else mode.lower()
     if view_mode not in {"paper", "backtest", "simulation"}:
         view_mode = "paper"
+    selected_strategy_profile = normalize_strategy_profile(strategy)
     config = load_config()
     replay_lower_bound, replay_upper_bound = _available_replay_bounds(config)
     include_trade_chart = view_mode == "paper"
@@ -1532,9 +2125,8 @@ def trades_page(
     decision_rows: list[str] = []
     for index, cycle in enumerate(decisions):
         cycle_breakdown = _decision_breakdown(cycle, cycle)
-        decision_rows.append(_format_decision_row(cycle, cycle_breakdown, hidden=index >= 10))
+        decision_rows.append(_format_decision_row(cycle, cycle_breakdown))
     decision_table = "".join(decision_rows) if decision_rows else "<tr><td class='empty' colspan='7'>No decisions recorded yet.</td></tr>"
-    hidden_decision_count = max(len(decisions) - 10, 0)
     active_swings = list((state["broker_state"] or {}).get("open_swing_positions", []))
     swing_rows = (
         "".join(
@@ -1560,6 +2152,8 @@ def trades_page(
     )
     backtest_summary = ""
     backtest_portfolio_side = ""
+    backtest_comparison_section = ""
+    backtest_diagnostic_section = ""
     selected_backtest: dict[str, object] | None = None
     simulation_summary = ""
     simulation_side = ""
@@ -1567,6 +2161,7 @@ def trades_page(
     selected_fee_pct = fee_pct if fee_pct is not None else config.execution.fee_pct
     selected_spread_pct = spread_pct if spread_pct is not None else config.execution.spread_pct
     selected_slippage_pct = slippage_pct if slippage_pct is not None else config.execution.slippage_pct
+    selected_decision_cadence_minutes = decision_cadence_minutes if decision_cadence_minutes is not None else config.runtime.decision_cadence_minutes
     selected_sim_rsi_values = sim_rsi_values or "35,40,45"
     selected_sim_take_profit_values = sim_take_profit_values or "1.5,2.0"
     selected_sim_no_follow_values = sim_no_follow_values or "2,3"
@@ -1596,6 +2191,8 @@ def trades_page(
         )
     if selected_backtest is None:
         selected_backtest = state.get("latest_backtest") or (available_backtests[0] if available_backtests else None)
+    if view_mode == "backtest" and strategy is None and selected_backtest is not None:
+        selected_strategy_profile = normalize_strategy_profile(str(selected_backtest.get("strategy_profile", "hybrid_current")))
     selected_backtest_idx = (
         available_backtests.index(selected_backtest)
         if selected_backtest in available_backtests
@@ -1605,6 +2202,8 @@ def trades_page(
         selected_simulation = available_simulations[simulation_run_idx]
     if selected_simulation is None:
         selected_simulation = state.get("latest_simulation") or (available_simulations[0] if available_simulations else None)
+    if view_mode == "simulation" and strategy is None and selected_simulation is not None:
+        selected_strategy_profile = normalize_strategy_profile(str(selected_simulation.get("strategy_profile", "hybrid_current")))
     selected_simulation_idx = (
         available_simulations.index(selected_simulation)
         if selected_simulation in available_simulations
@@ -1618,8 +2217,8 @@ def trades_page(
                href="/trades?mode=backtest&backtest_run_idx={index}"
                style="text-decoration:none;">
               <div class="history-link-meta">{escape(_format_display_timestamp(str(run.get('recorded_at', ''))))}</div>
-              <div class="history-link-main">{escape(str(run.get('interval', 'n/a')))}</div>
-              <div class="history-link-sub">{float((run.get('metrics') or {}).get('total_return_percent', 0.0)):+.2f}% return</div>
+              <div class="history-link-main">{escape(strategy_profile_label(str(run.get('strategy_profile', 'hybrid_current'))))}</div>
+              <div class="history-link-sub">{escape(str(run.get('interval', 'n/a')))} | {float((run.get('metrics') or {}).get('total_return_percent', 0.0)):+.2f}% return</div>
             </a>
             """
             for index, run in enumerate(available_backtests)
@@ -1634,8 +2233,8 @@ def trades_page(
                href="/trades?mode=simulation&simulation_run_idx={index}"
                style="text-decoration:none;">
               <div class="history-link-meta">{escape(_format_display_timestamp(str(run.get('recorded_at', ''))))}</div>
-              <div class="history-link-main">{int(run.get('candidate_count', 0))} candidates</div>
-              <div class="history-link-sub">Best {float((((run.get('candidates') or [{}])[0].get('summary') or {}).get('metrics') or {}).get('total_return_percent', 0.0)):+.2f}% return</div>
+              <div class="history-link-main">{escape(strategy_profile_label(str(run.get('strategy_profile', 'hybrid_current'))))}</div>
+              <div class="history-link-sub">{int(run.get('candidate_count', 0))} candidates | Best {float((((run.get('candidates') or [{}])[0].get('summary') or {}).get('metrics') or {}).get('total_return_percent', 0.0)):+.2f}% return</div>
             </a>
             """
             for index, run in enumerate(available_simulations)
@@ -1652,6 +2251,49 @@ def trades_page(
             f"{str(latest_trade.get('side', '')).upper()} "
             f"${float(latest_trade.get('size_usd', 0)):.2f} @ ${float(latest_trade.get('price', 0)):.2f}"
         )
+    hero_banner = f"""
+        <div class="trade-banner">
+          <div class="trade-banner-card"><div class="metric-label">Portfolio Equity</div><div class="metric-value">${portfolio["equity"]:.2f}</div></div>
+          <div class="trade-banner-card"><div class="metric-label">Total PnL</div><div class="metric-value {pnl_class}">${portfolio["total_pnl"]:+.2f}</div></div>
+          <div class="trade-banner-card"><div class="metric-label">Daily PnL</div><div class="metric-value {daily_pnl_class}">${daily_pnl:+.2f}</div></div>
+          <div class="trade-banner-card"><div class="metric-label">BTC Allocation</div><div class="metric-value">{portfolio["exposure_percent"]:.2f}%</div></div>
+          <div class="trade-banner-card"><div class="metric-label">Active Strategy</div><div class="metric-value">{escape(str(latest_cycle.get('strategy_name', 'n/a')).replace('Strategy', ''))}</div></div>
+          <div class="trade-banner-card"><div class="metric-label">Latest Trade</div><div class="metric-value">{escape(latest_trade_summary)}</div><div class="metric-label" style="margin-top:.35rem;">{escape(latest_trade_timestamp)}</div></div>
+        </div>
+    """
+    if view_mode == "backtest" and selected_backtest is not None:
+        backtest_metrics = selected_backtest.get("metrics") or {}
+        backtest_snapshot = selected_backtest.get("final_snapshot") or {}
+        backtest_halted_at = _format_display_timestamp(str(selected_backtest.get("halted_at", "")))
+        backtest_end_label = _format_display_timestamp(str(selected_backtest.get("end_at", "")))
+        backtest_strategy_label = strategy_profile_label(str(selected_backtest.get("strategy_profile", "hybrid_current")))
+        backtest_status = "Stopped by Drawdown Guard" if selected_backtest.get("halted_reason") else "Completed Full Window"
+        backtest_return = float(backtest_metrics.get("total_return_percent", 0.0))
+        hero_banner = f"""
+        <div class="trade-banner">
+          <div class="trade-banner-card"><div class="metric-label">Final Equity</div><div class="metric-value">${float(backtest_metrics.get("final_equity_usd", 0.0)):.2f}</div></div>
+          <div class="trade-banner-card"><div class="metric-label">Total Return</div><div class="metric-value {'value-positive' if backtest_return >= 0 else 'value-negative'}">{backtest_return:+.2f}%</div></div>
+          <div class="trade-banner-card"><div class="metric-label">Max Drawdown</div><div class="metric-value">{float(backtest_metrics.get("max_drawdown_percent", 0.0)):.2f}%</div></div>
+          <div class="trade-banner-card"><div class="metric-label">Ending BTC</div><div class="metric-value">{float(backtest_snapshot.get("btc_units", 0.0)):.6f} BTC</div></div>
+          <div class="trade-banner-card"><div class="metric-label">Strategy</div><div class="metric-value">{escape(backtest_strategy_label)}</div></div>
+          <div class="trade-banner-card"><div class="metric-label">Run Status</div><div class="metric-value">{escape(backtest_status)}</div><div class="metric-label" style="margin-top:.35rem;">{escape(backtest_halted_at or backtest_end_label)}</div></div>
+        </div>
+        """
+    elif view_mode == "simulation" and selected_simulation is not None:
+        top_candidate = (selected_simulation.get("candidates") or [{}])[0]
+        top_summary = top_candidate.get("summary") or {}
+        top_metrics = top_summary.get("metrics") or {}
+        simulation_return = float(top_metrics.get("total_return_percent", 0.0))
+        hero_banner = f"""
+        <div class="trade-banner">
+          <div class="trade-banner-card"><div class="metric-label">Candidates</div><div class="metric-value">{int(selected_simulation.get("candidate_count", 0))}</div></div>
+          <div class="trade-banner-card"><div class="metric-label">Best Return</div><div class="metric-value {'value-positive' if simulation_return >= 0 else 'value-negative'}">{simulation_return:+.2f}%</div></div>
+          <div class="trade-banner-card"><div class="metric-label">Best Drawdown</div><div class="metric-value">{float(top_metrics.get("max_drawdown_percent", 0.0)):.2f}%</div></div>
+          <div class="trade-banner-card"><div class="metric-label">Best Sharpe</div><div class="metric-value">{float(top_metrics.get("sharpe_ratio", 0.0)):.2f}</div></div>
+          <div class="trade-banner-card"><div class="metric-label">Strategy</div><div class="metric-value">{escape(strategy_profile_label(str(selected_simulation.get("strategy_profile", "hybrid_current"))))}</div></div>
+          <div class="trade-banner-card"><div class="metric-label">Best Candidate</div><div class="metric-value">{escape(str(selected_simulation.get("best_candidate_id", "n/a")))}</div></div>
+        </div>
+        """
 
     paper_sections = f"""
         <section class="trade-section">
@@ -1732,10 +2374,16 @@ def trades_page(
               <div class="trade-section-title">Recent Scheduled Decisions</div>
             </div>
           </div>
-          <div class="segmented" style="margin-top:.8rem;">
-            <button class="seg-btn active" id="decision-filter-buy" type="button">Buy</button>
-            <button class="seg-btn" id="decision-filter-sell" type="button">Sell</button>
-            <button class="seg-btn" id="decision-filter-all" type="button">All</button>
+          <div class="decision-toolbar">
+            <div class="decision-toolbar-group">
+              <button class="seg-btn active" id="decision-filter-buy" type="button">Buy</button>
+              <button class="seg-btn" id="decision-filter-sell" type="button">Sell</button>
+              <button class="seg-btn" id="decision-filter-all" type="button">All</button>
+            </div>
+            <div class="decision-toolbar-group">
+              <button class="seg-btn active" id="decision-sort-desc" type="button">Newest</button>
+              <button class="seg-btn" id="decision-sort-asc" type="button">Oldest</button>
+            </div>
           </div>
           <div class="trade-table-wrap">
           <table>
@@ -1753,7 +2401,6 @@ def trades_page(
             <tbody id="decision-log-body">{decision_table}</tbody>
           </table>
           </div>
-          {"<button class='ghost' id='decision-log-expand' style='margin-top:.9rem;'>Show 10 more</button>" if hidden_decision_count else ""}
         </section>
     """
     backtest_controls = f"""
@@ -1768,7 +2415,7 @@ def trades_page(
           <form method="get" action="/trades" style="margin-top:.9rem; display:grid; gap:.8rem;">
             <input type="hidden" name="mode" value="backtest" />
             <input type="hidden" name="run_backtest" value="1" />
-            <div class="filter-grid" style="display:grid; grid-template-columns:180px 1fr 1fr auto;">
+            <div class="filter-grid" style="display:grid; grid-template-columns:180px 220px 180px 1fr 1fr auto;">
               <div class="field">
                 <label for="backtestInterval">Interval</label>
                 <select id="backtestInterval" name="interval">
@@ -1778,6 +2425,16 @@ def trades_page(
                   <option value="1hr" {'selected' if interval == '1hr' else ''}>1hr</option>
                   <option value="1d" {'selected' if interval == '1d' else ''}>1d</option>
                 </select>
+              </div>
+              <div class="field">
+                <label for="backtestStrategy">Strategy</label>
+                <select id="backtestStrategy" name="strategy">
+                  {''.join(f"<option value=\"{profile}\" {'selected' if selected_strategy_profile == profile else ''}>{escape(strategy_profile_label(profile))}</option>" for profile in STRATEGY_PROFILES)}
+                </select>
+              </div>
+              <div class="field">
+                <label for="backtestCadence">Decision Cadence</label>
+                <input id="backtestCadence" type="number" name="decision_cadence_minutes" min="1" step="1" value="{selected_decision_cadence_minutes}" />
               </div>
               <div class="field">
                 <label for="backtestStart">Start</label>
@@ -1826,12 +2483,14 @@ def trades_page(
                 fee_pct=selected_fee_pct,
                 spread_pct=selected_spread_pct,
                 slippage_pct=selected_slippage_pct,
+                decision_cadence_minutes=selected_decision_cadence_minutes,
             )
             backtest_result = BacktestEngine(backtest_config).run(
                 symbol=config.trading.symbol,
                 interval=interval,
                 start_at=start_at,
                 end_at=end_at,
+                strategy_profile=selected_strategy_profile,
             )
             saved_backtest = save_backtest_result(config.data.data_lake_path, backtest_result)
             selected_backtest = saved_backtest
@@ -1849,6 +2508,68 @@ def trades_page(
             total_spread = float(final_snapshot.get("total_spread_cost_usd", 0.0))
             total_slippage = float(final_snapshot.get("total_slippage_cost_usd", 0.0))
             total_execution_cost = total_fees + total_spread + total_slippage
+            comparison_results: list[tuple[str, object]] = [(selected_strategy_profile, backtest_result)]
+            for profile in STRATEGY_PROFILES:
+                if profile == selected_strategy_profile:
+                    continue
+                comparison_run = BacktestEngine(backtest_config).run(
+                    symbol=config.trading.symbol,
+                    interval=interval,
+                    start_at=start_at,
+                    end_at=end_at,
+                    strategy_profile=profile,
+                )
+                comparison_results.append((profile, comparison_run))
+            comparison_rows = "".join(
+                "<tr>"
+                f"<td>{escape(strategy_profile_label(profile))}{' <strong>(Selected)</strong>' if profile == selected_strategy_profile else ''}</td>"
+                f"<td>${result.metrics.final_equity_usd:.2f}</td>"
+                f"<td>{result.metrics.total_return_percent:+.2f}%</td>"
+                f"<td>{result.metrics.max_drawdown_percent:.2f}%</td>"
+                f"<td>{result.metrics.sharpe_ratio:.2f}</td>"
+                f"<td>{result.metrics.win_rate_percent:.2f}%</td>"
+                f"<td>{int(result.metrics.filled_trade_count)}</td>"
+                f"<td>{result.metrics.buy_and_hold_return_percent:+.2f}%</td>"
+                f"<td>{(result.metrics.total_return_percent - result.metrics.buy_and_hold_return_percent):+.2f}%</td>"
+                "</tr>"
+                for profile, result in comparison_results
+            )
+            swing_only_result = next((result for profile, result in comparison_results if profile == "swing_only"), None)
+            if swing_only_result is not None and swing_only_result.metrics.filled_trade_count == 0:
+                diagnostic_lines = _swing_inactivity_summary([asdict(step) for step in swing_only_result.steps])
+                backtest_diagnostic_section = f"""
+                <section class="trade-section decision-card">
+                  <div class="trade-section-head">
+                    <div>
+                      <div class="label">Swing Diagnostics</div>
+                      <div class="trade-section-title">Why Swing Only Took No Trades</div>
+                    </div>
+                  </div>
+                  <ul class="decision-list">
+                    {''.join(f"<li>{escape(line)}</li>" for line in diagnostic_lines)}
+                  </ul>
+                  <p><strong>Interpretation:</strong> The swing entry gate is currently too restrictive for this replay window, so Hybrid collapses to DCA whenever Swing Only also records zero trades.</p>
+                </section>
+                """
+            backtest_comparison_section = f"""
+            <section class="trade-section">
+              <div class="trade-section-head">
+                <div>
+                  <div class="label">Strategy Comparison</div>
+                  <div class="trade-section-title">Same Window, Four Profiles</div>
+                  <div class="trade-section-note">Each profile was replayed over the same market window and execution-cost assumptions so the comparison stays apples-to-apples.</div>
+                </div>
+              </div>
+              <div class="trade-table-wrap">
+                <table>
+                  <thead>
+                    <tr><th>Profile</th><th>Final Equity</th><th>Return</th><th>Max Drawdown</th><th>Sharpe</th><th>Win Rate</th><th>Trades</th><th>Benchmark Return</th><th>Excess vs Benchmark</th></tr>
+                  </thead>
+                  <tbody>{comparison_rows}</tbody>
+                </table>
+              </div>
+            </section>
+            """
         except ValueError as exc:
             backtest_summary = f"""
             <section class="trade-section">
@@ -1880,12 +2601,11 @@ def trades_page(
         )
         selected_step = ((selected_backtest.get("steps") or [])[-1:][0]) if selected_backtest.get("steps") else None
         selected_step_breakdown = _backtest_step_breakdown(selected_step or {})
-        backtest_decisions = list(reversed(selected_backtest.get("steps") or []))
+        backtest_decisions = list(reversed(_visible_backtest_steps(list(selected_backtest.get("steps") or []))))
         backtest_decision_rows = "".join(
-            _format_backtest_decision_row(step, hidden=index >= 10)
+            _format_backtest_decision_row(step)
             for index, step in enumerate(backtest_decisions)
         ) or "<tr><td class='empty' colspan='7'>No replay decisions recorded yet.</td></tr>"
-        hidden_backtest_decision_count = max(len(backtest_decisions) - 10, 0)
         backtest_portfolio_side = f"""
         <section class="trade-section" style="display:{'block' if view_mode == 'backtest' else 'none'};">
           <div class="label">Portfolio Snapshot</div>
@@ -1911,6 +2631,8 @@ def trades_page(
                 </div>
               </div>
               <div class="market-mini" style="margin-top:.35rem; margin-bottom:.95rem;">
+                <div class="mini-row"><div class="mini-label">Strategy</div><div class="mini-value">{escape(strategy_profile_label(str(selected_backtest.get('strategy_profile', 'hybrid_current'))))}</div></div>
+                <div class="mini-row"><div class="mini-label">Decision Cadence</div><div class="mini-value">{int(selected_backtest.get('decision_cadence_minutes', selected_decision_cadence_minutes))}m</div></div>
                 <div class="mini-row"><div class="mini-label">Replay Window</div><div class="mini-value">{escape(_format_display_timestamp(str(selected_backtest.get('start_at', ''))))} to {escape(_format_display_timestamp(str(selected_backtest.get('end_at', ''))))}</div></div>
                 <div class="mini-row"><div class="mini-label">Saved Run</div><div class="mini-value">{escape(_format_display_timestamp(str(selected_backtest.get('recorded_at', ''))))}</div></div>
                 <div class="mini-row"><div class="mini-label">Run End</div><div class="mini-value">{escape(_format_display_timestamp(halted_at)) if halted_at else 'Completed selected window'}</div></div>
@@ -1928,6 +2650,20 @@ def trades_page(
                 <div class="metric light"><div class="metric-label">Fees Paid</div><div class="metric-value">${total_fees:.2f}</div></div>
                 <div class="metric light"><div class="metric-label">Spread Cost</div><div class="metric-value">${total_spread:.2f}</div></div>
                 <div class="metric light"><div class="metric-label">Slippage Cost</div><div class="metric-value">${total_slippage:.2f}</div></div>
+              </div>
+            </section>
+            <section class="trade-section chart-card">
+              <div class="label">Equity Curve</div>
+              <div class="value">{escape(strategy_profile_label(str(selected_backtest.get('strategy_profile', 'hybrid_current'))))} vs Buy & Hold</div>
+              <div class="trade-chart-frame" style="margin-top:.8rem;">
+                <div id="backtestEquityChart" class="chart-surface" style="height:320px;"></div>
+              </div>
+            </section>
+            <section class="trade-section chart-card">
+              <div class="label">Drawdowns</div>
+              <div class="value">Peak-to-Trough Decline</div>
+              <div class="trade-chart-frame" style="margin-top:.8rem;">
+                <div id="backtestDrawdownChart" class="chart-surface" style="height:280px;"></div>
               </div>
             </section>
             <section class="trade-section decision-card">
@@ -1950,10 +2686,16 @@ def trades_page(
                   <div class="trade-section-title">Replay Decision Timeline</div>
                 </div>
               </div>
-              <div class="segmented" style="margin-top:.8rem;">
-                <button class="seg-btn active" id="backtest-decision-filter-buy" type="button">Buy</button>
-                <button class="seg-btn" id="backtest-decision-filter-sell" type="button">Sell</button>
-                <button class="seg-btn" id="backtest-decision-filter-all" type="button">All</button>
+              <div class="decision-toolbar">
+                <div class="decision-toolbar-group">
+                  <button class="seg-btn active" id="backtest-decision-filter-buy" type="button">Buy</button>
+                  <button class="seg-btn" id="backtest-decision-filter-sell" type="button">Sell</button>
+                  <button class="seg-btn" id="backtest-decision-filter-all" type="button">All</button>
+                </div>
+                <div class="decision-toolbar-group">
+                  <button class="seg-btn active" id="backtest-decision-sort-desc" type="button">Newest</button>
+                  <button class="seg-btn" id="backtest-decision-sort-asc" type="button">Oldest</button>
+                </div>
               </div>
               <div class="trade-table-wrap">
               <table>
@@ -1963,21 +2705,6 @@ def trades_page(
                 <tbody id="backtest-decision-log-body">{backtest_decision_rows}</tbody>
               </table>
               </div>
-              {"<button class='ghost' id='backtest-decision-expand' style='margin-top:.9rem;'>Show 10 more</button>" if hidden_backtest_decision_count else ""}
-            </section>
-            <section class="trade-section chart-card">
-              <div class="label">Equity Curve</div>
-              <div class="value">Strategy vs Buy & Hold</div>
-              <div class="trade-chart-frame" style="margin-top:.8rem;">
-                <div id="backtestEquityChart" class="chart-surface" style="height:320px;"></div>
-              </div>
-            </section>
-            <section class="trade-section chart-card">
-              <div class="label">Drawdowns</div>
-              <div class="value">Peak-to-Trough Decline</div>
-              <div class="trade-chart-frame" style="margin-top:.8rem;">
-                <div id="backtestDrawdownChart" class="chart-surface" style="height:280px;"></div>
-              </div>
             </section>
         """
     else:
@@ -1986,7 +2713,7 @@ def trades_page(
         backtest_empty = (
             backtest_empty
         )
-    backtest_sections = backtest_controls + (backtest_summary or backtest_empty)
+    backtest_sections = backtest_controls + backtest_comparison_section + backtest_diagnostic_section + (backtest_summary or backtest_empty)
     simulation_payload = ""
     simulation_controls = f"""
         <section class="trade-section">
@@ -1994,13 +2721,13 @@ def trades_page(
             <div>
               <div class="label">Simulation Controls</div>
               <div class="trade-section-title">Strategy Parameter Sweep</div>
-              <div class="trade-section-note">Run a bounded parameter sweep over the current swing strategy to compare which settings improve return, drawdown, and trade count.</div>
+              <div class="trade-section-note">Run a bounded comparison over the selected strategy profile. Swing-based profiles sweep their parameter grid, while baseline profiles run as a single candidate.</div>
             </div>
           </div>
           <form method="get" action="/trades" style="margin-top:.9rem; display:grid; gap:.8rem;">
             <input type="hidden" name="mode" value="simulation" />
             <input type="hidden" name="run_simulation" value="1" />
-            <div class="filter-grid" style="display:grid; grid-template-columns:180px 1fr 1fr auto;">
+            <div class="filter-grid" style="display:grid; grid-template-columns:180px 220px 180px 1fr 1fr auto;">
               <div class="field">
                 <label for="simulationInterval">Interval</label>
                 <select id="simulationInterval" name="interval">
@@ -2010,6 +2737,16 @@ def trades_page(
                   <option value="1hr" {'selected' if interval == '1hr' else ''}>1hr</option>
                   <option value="1d" {'selected' if interval == '1d' else ''}>1d</option>
                 </select>
+              </div>
+              <div class="field">
+                <label for="simulationStrategy">Strategy</label>
+                <select id="simulationStrategy" name="strategy">
+                  {''.join(f"<option value=\"{profile}\" {'selected' if selected_strategy_profile == profile else ''}>{escape(strategy_profile_label(profile))}</option>" for profile in STRATEGY_PROFILES)}
+                </select>
+              </div>
+              <div class="field">
+                <label for="simulationCadence">Decision Cadence</label>
+                <input id="simulationCadence" type="number" name="decision_cadence_minutes" min="1" step="1" value="{selected_decision_cadence_minutes}" />
               </div>
               <div class="field">
                 <label for="simulationStart">Start</label>
@@ -2067,12 +2804,14 @@ def trades_page(
                 "swing_follow_through_buffer_percent": _parse_float_sweep(sim_follow_buffer_values, [0.1, 0.2]),
                 "atr_multiplier": _parse_float_sweep(sim_atr_values, [1.5, 2.0]),
             }
+            config.runtime.decision_cadence_minutes = selected_decision_cadence_minutes
             simulation_result = SimulationEngine(config).run(
                 symbol=config.trading.symbol,
                 interval=interval,
                 start_at=start_at,
                 end_at=end_at,
                 parameter_grid=parameter_grid,
+                strategy_profile=selected_strategy_profile,
             )
             selected_simulation = save_simulation_result(config.data.data_lake_path, simulation_result)
         except ValueError as exc:
@@ -2100,14 +2839,15 @@ def trades_page(
             for candidate in candidates[:12]:
                 params = candidate.get("params") or {}
                 metrics = ((candidate.get("summary") or {}).get("metrics") or {})
+                has_params = bool(params)
                 candidate_rows_list.append(
                     "<tr>"
                     f"<td>{escape(str(candidate.get('candidate_id', 'n/a')))}</td>"
-                    f"<td>RSI &lt; {float(params.get('swing_entry_rsi_max', 0.0)):.0f}</td>"
-                    f"<td>{float(params.get('swing_take_profit_percent', 0.0)):.2f}%</td>"
-                    f"<td>{int(params.get('swing_no_follow_through_candles', 0))}</td>"
-                    f"<td>{float(params.get('swing_follow_through_buffer_percent', 0.0)):.2f}%</td>"
-                    f"<td>{float(params.get('atr_multiplier', 0.0)):.2f}</td>"
+                    f"<td>{f'RSI < {float(params.get('swing_entry_rsi_max', 0.0)):.0f}' if has_params else 'n/a'}</td>"
+                    f"<td>{f'{float(params.get('swing_take_profit_percent', 0.0)):.2f}%' if has_params else 'n/a'}</td>"
+                    f"<td>{str(int(params.get('swing_no_follow_through_candles', 0))) if has_params else 'n/a'}</td>"
+                    f"<td>{f'{float(params.get('swing_follow_through_buffer_percent', 0.0)):.2f}%' if has_params else 'n/a'}</td>"
+                    f"<td>{f'{float(params.get('atr_multiplier', 0.0)):.2f}' if has_params else 'n/a'}</td>"
                     f"<td>{float(metrics.get('total_return_percent', 0.0)):+.2f}%</td>"
                     f"<td>{float(metrics.get('max_drawdown_percent', 0.0)):.2f}%</td>"
                     f"<td>{int(metrics.get('filled_trade_count', 0))}</td>"
@@ -2119,11 +2859,11 @@ def trades_page(
               <div class="label">Best Candidate</div>
               <div class="value">{escape(str(best_candidate.get('candidate_id', 'n/a')))}</div>
               <div class="market-mini">
-                <div class="mini-row"><div class="mini-label">RSI Max</div><div class="mini-value">{float((best_candidate.get('params') or {}).get('swing_entry_rsi_max', 0.0)):.0f}</div></div>
-                <div class="mini-row"><div class="mini-label">Take Profit</div><div class="mini-value">{float((best_candidate.get('params') or {}).get('swing_take_profit_percent', 0.0)):.2f}%</div></div>
-                <div class="mini-row"><div class="mini-label">No Follow Candles</div><div class="mini-value">{int((best_candidate.get('params') or {}).get('swing_no_follow_through_candles', 0))}</div></div>
-                <div class="mini-row"><div class="mini-label">Follow Buffer</div><div class="mini-value">{float((best_candidate.get('params') or {}).get('swing_follow_through_buffer_percent', 0.0)):.2f}%</div></div>
-                <div class="mini-row"><div class="mini-label">ATR Multiplier</div><div class="mini-value">{float((best_candidate.get('params') or {}).get('atr_multiplier', 0.0)):.2f}</div></div>
+                <div class="mini-row"><div class="mini-label">RSI Max</div><div class="mini-value">{f"{float((best_candidate.get('params') or {}).get('swing_entry_rsi_max', 0.0)):.0f}" if best_candidate.get('params') else 'n/a'}</div></div>
+                <div class="mini-row"><div class="mini-label">Take Profit</div><div class="mini-value">{f"{float((best_candidate.get('params') or {}).get('swing_take_profit_percent', 0.0)):.2f}%" if best_candidate.get('params') else 'n/a'}</div></div>
+                <div class="mini-row"><div class="mini-label">No Follow Candles</div><div class="mini-value">{str(int((best_candidate.get('params') or {}).get('swing_no_follow_through_candles', 0))) if best_candidate.get('params') else 'n/a'}</div></div>
+                <div class="mini-row"><div class="mini-label">Follow Buffer</div><div class="mini-value">{f"{float((best_candidate.get('params') or {}).get('swing_follow_through_buffer_percent', 0.0)):.2f}%" if best_candidate.get('params') else 'n/a'}</div></div>
+                <div class="mini-row"><div class="mini-label">ATR Multiplier</div><div class="mini-value">{f"{float((best_candidate.get('params') or {}).get('atr_multiplier', 0.0)):.2f}" if best_candidate.get('params') else 'n/a'}</div></div>
               </div>
             </section>
             <section class="trade-section" style="display:{'block' if view_mode == 'simulation' else 'none'};">
@@ -2140,6 +2880,8 @@ def trades_page(
                 </div>
               </div>
               <div class="market-mini" style="margin-top:.35rem; margin-bottom:.95rem;">
+                <div class="mini-row"><div class="mini-label">Strategy</div><div class="mini-value">{escape(strategy_profile_label(str(selected_simulation.get('strategy_profile', 'hybrid_current'))))}</div></div>
+                <div class="mini-row"><div class="mini-label">Decision Cadence</div><div class="mini-value">{int(selected_simulation.get('decision_cadence_minutes', selected_decision_cadence_minutes))}m</div></div>
                 <div class="mini-row"><div class="mini-label">Replay Window</div><div class="mini-value">{escape(_format_display_timestamp(str(selected_simulation.get('start_at', ''))))} to {escape(_format_display_timestamp(str(selected_simulation.get('end_at', ''))))}</div></div>
                 <div class="mini-row"><div class="mini-label">Saved Run</div><div class="mini-value">{escape(_format_display_timestamp(str(selected_simulation.get('recorded_at', ''))))}</div></div>
                 <div class="mini-row"><div class="mini-label">Candidates Tested</div><div class="mini-value">{int(selected_simulation.get('candidate_count', 0))}</div></div>
@@ -2222,14 +2964,7 @@ def trades_page(
             <a class="trade-mode-pill {'active' if view_mode == 'simulation' else ''}" href="/trades?mode=simulation">Simulation</a>
           </div>
         </div>
-        <div class="trade-banner">
-          <div class="trade-banner-card"><div class="metric-label">Portfolio Equity</div><div class="metric-value">${portfolio["equity"]:.2f}</div></div>
-          <div class="trade-banner-card"><div class="metric-label">Total PnL</div><div class="metric-value {pnl_class}">${portfolio["total_pnl"]:+.2f}</div></div>
-          <div class="trade-banner-card"><div class="metric-label">Daily PnL</div><div class="metric-value {daily_pnl_class}">${daily_pnl:+.2f}</div></div>
-          <div class="trade-banner-card"><div class="metric-label">BTC Allocation</div><div class="metric-value">{portfolio["exposure_percent"]:.2f}%</div></div>
-          <div class="trade-banner-card"><div class="metric-label">Active Strategy</div><div class="metric-value">{escape(str(latest_cycle.get('strategy_name', 'n/a')).replace('Strategy', ''))}</div></div>
-          <div class="trade-banner-card"><div class="metric-label">Latest Trade</div><div class="metric-value">{escape(latest_trade_summary)}</div><div class="metric-label" style="margin-top:.35rem;">{escape(latest_trade_timestamp)}</div></div>
-        </div>
+        {hero_banner}
       </section>
       <section class="trade-layout">
       <div class="trade-main">
@@ -2287,23 +3022,25 @@ def trades_page(
       const decisionReasons = document.getElementById("decision-reasons");
       const decisionInterpretation = document.getElementById("decision-interpretation");
       const decisionRows = Array.from(document.querySelectorAll(".decision-row"));
-      const expandButton = document.getElementById("decision-log-expand");
       const buyFilterButton = document.getElementById("decision-filter-buy");
       const sellFilterButton = document.getElementById("decision-filter-sell");
       const allFilterButton = document.getElementById("decision-filter-all");
+      const sortDescButton = document.getElementById("decision-sort-desc");
+      const sortAscButton = document.getElementById("decision-sort-asc");
       const backtestDecisionHeadline = document.getElementById("backtest-decision-headline");
       const backtestDecisionTimestamp = document.getElementById("backtest-decision-timestamp");
       const backtestDecisionReasons = document.getElementById("backtest-decision-reasons");
       const backtestDecisionInterpretation = document.getElementById("backtest-decision-interpretation");
       const backtestDecisionRows = Array.from(document.querySelectorAll(".backtest-decision-row"));
-      const backtestExpandButton = document.getElementById("backtest-decision-expand");
       const backtestBuyFilterButton = document.getElementById("backtest-decision-filter-buy");
       const backtestSellFilterButton = document.getElementById("backtest-decision-filter-sell");
       const backtestAllFilterButton = document.getElementById("backtest-decision-filter-all");
+      const backtestSortDescButton = document.getElementById("backtest-decision-sort-desc");
+      const backtestSortAscButton = document.getElementById("backtest-decision-sort-asc");
       let decisionFilter = "BUY";
       let backtestDecisionFilter = "BUY";
-      let visibleDecisionCount = 10;
-      let visibleBacktestDecisionCount = 10;
+      let decisionSort = "DESC";
+      let backtestDecisionSort = "DESC";
 
       function setFilterButtons() {{
         if (buyFilterButton) {{
@@ -2314,6 +3051,12 @@ def trades_page(
         }}
         if (allFilterButton) {{
           allFilterButton.classList.toggle("active", decisionFilter === "ALL");
+        }}
+        if (sortDescButton) {{
+          sortDescButton.classList.toggle("active", decisionSort === "DESC");
+        }}
+        if (sortAscButton) {{
+          sortAscButton.classList.toggle("active", decisionSort === "ASC");
         }}
       }}
 
@@ -2327,20 +3070,28 @@ def trades_page(
         }});
       }}
 
+      function sortRowsByTimestamp(rows, direction) {{
+        return [...rows].sort((left, right) => {{
+          const leftTs = Date.parse(left.dataset.sortTs || "");
+          const rightTs = Date.parse(right.dataset.sortTs || "");
+          const leftValue = Number.isFinite(leftTs) ? leftTs : 0;
+          const rightValue = Number.isFinite(rightTs) ? rightTs : 0;
+          return direction === "ASC" ? leftValue - rightValue : rightValue - leftValue;
+        }});
+      }}
+
       function refreshDecisionTable() {{
-        const matchingRows = filteredDecisionRows();
+        const matchingRows = sortRowsByTimestamp(filteredDecisionRows(), decisionSort);
+        const body = document.getElementById("decision-log-body");
+        if (body) {{
+          matchingRows.forEach((row) => body.appendChild(row));
+        }}
         decisionRows.forEach((row) => {{
           row.classList.add("decision-row-hidden");
         }});
-        matchingRows.slice(0, visibleDecisionCount).forEach((row) => {{
+        matchingRows.forEach((row) => {{
           row.classList.remove("decision-row-hidden");
         }});
-
-        if (expandButton) {{
-          const hiddenCount = Math.max(matchingRows.length - visibleDecisionCount, 0);
-          expandButton.style.display = hiddenCount > 0 ? "inline-flex" : "none";
-          expandButton.textContent = hiddenCount > 10 ? "Show 10 more" : "Show remaining";
-        }}
 
         const selectedVisible = decisionRows.find((row) => row.classList.contains("decision-row-active") && !row.classList.contains("decision-row-hidden"));
         if (!selectedVisible) {{
@@ -2379,17 +3130,9 @@ def trades_page(
         applyDecision(decisionRows[0]);
       }}
 
-      if (expandButton) {{
-        expandButton.addEventListener("click", () => {{
-          visibleDecisionCount += 10;
-          refreshDecisionTable();
-        }});
-      }}
-
       if (buyFilterButton) {{
         buyFilterButton.addEventListener("click", () => {{
           decisionFilter = "BUY";
-          visibleDecisionCount = 10;
           setFilterButtons();
           refreshDecisionTable();
         }});
@@ -2398,7 +3141,6 @@ def trades_page(
       if (sellFilterButton) {{
         sellFilterButton.addEventListener("click", () => {{
           decisionFilter = "SELL";
-          visibleDecisionCount = 10;
           setFilterButtons();
           refreshDecisionTable();
         }});
@@ -2407,7 +3149,22 @@ def trades_page(
       if (allFilterButton) {{
         allFilterButton.addEventListener("click", () => {{
           decisionFilter = "ALL";
-          visibleDecisionCount = 10;
+          setFilterButtons();
+          refreshDecisionTable();
+        }});
+      }}
+
+      if (sortDescButton) {{
+        sortDescButton.addEventListener("click", () => {{
+          decisionSort = "DESC";
+          setFilterButtons();
+          refreshDecisionTable();
+        }});
+      }}
+
+      if (sortAscButton) {{
+        sortAscButton.addEventListener("click", () => {{
+          decisionSort = "ASC";
           setFilterButtons();
           refreshDecisionTable();
         }});
@@ -2425,6 +3182,12 @@ def trades_page(
         }}
         if (backtestAllFilterButton) {{
           backtestAllFilterButton.classList.toggle("active", backtestDecisionFilter === "ALL");
+        }}
+        if (backtestSortDescButton) {{
+          backtestSortDescButton.classList.toggle("active", backtestDecisionSort === "DESC");
+        }}
+        if (backtestSortAscButton) {{
+          backtestSortAscButton.classList.toggle("active", backtestDecisionSort === "ASC");
         }}
       }}
 
@@ -2464,18 +3227,17 @@ def trades_page(
 
       function refreshBacktestDecisionTable() {{
         if (!backtestDecisionRows.length) return;
-        const matchingRows = filteredBacktestDecisionRows();
+        const matchingRows = sortRowsByTimestamp(filteredBacktestDecisionRows(), backtestDecisionSort);
+        const body = document.getElementById("backtest-decision-log-body");
+        if (body) {{
+          matchingRows.forEach((row) => body.appendChild(row));
+        }}
         backtestDecisionRows.forEach((row) => {{
           row.classList.add("decision-row-hidden");
         }});
-        matchingRows.slice(0, visibleBacktestDecisionCount).forEach((row) => {{
+        matchingRows.forEach((row) => {{
           row.classList.remove("decision-row-hidden");
         }});
-        if (backtestExpandButton) {{
-          const hiddenCount = Math.max(matchingRows.length - visibleBacktestDecisionCount, 0);
-          backtestExpandButton.style.display = hiddenCount > 0 ? "inline-flex" : "none";
-          backtestExpandButton.textContent = hiddenCount > 10 ? "Show 10 more" : "Show remaining";
-        }}
         const selectedVisible = backtestDecisionRows.find((row) => row.classList.contains("decision-row-active") && !row.classList.contains("decision-row-hidden"));
         if (!selectedVisible) {{
           const firstVisible = matchingRows.find((row) => !row.classList.contains("decision-row-hidden"));
@@ -2488,16 +3250,9 @@ def trades_page(
       backtestDecisionRows.forEach((row) => {{
         row.addEventListener("click", () => applyBacktestDecision(row));
       }});
-      if (backtestExpandButton) {{
-        backtestExpandButton.addEventListener("click", () => {{
-          visibleBacktestDecisionCount += 10;
-          refreshBacktestDecisionTable();
-        }});
-      }}
       if (backtestBuyFilterButton) {{
         backtestBuyFilterButton.addEventListener("click", () => {{
           backtestDecisionFilter = "BUY";
-          visibleBacktestDecisionCount = 10;
           setBacktestFilterButtons();
           refreshBacktestDecisionTable();
         }});
@@ -2505,7 +3260,6 @@ def trades_page(
       if (backtestSellFilterButton) {{
         backtestSellFilterButton.addEventListener("click", () => {{
           backtestDecisionFilter = "SELL";
-          visibleBacktestDecisionCount = 10;
           setBacktestFilterButtons();
           refreshBacktestDecisionTable();
         }});
@@ -2513,7 +3267,20 @@ def trades_page(
       if (backtestAllFilterButton) {{
         backtestAllFilterButton.addEventListener("click", () => {{
           backtestDecisionFilter = "ALL";
-          visibleBacktestDecisionCount = 10;
+          setBacktestFilterButtons();
+          refreshBacktestDecisionTable();
+        }});
+      }}
+      if (backtestSortDescButton) {{
+        backtestSortDescButton.addEventListener("click", () => {{
+          backtestDecisionSort = "DESC";
+          setBacktestFilterButtons();
+          refreshBacktestDecisionTable();
+        }});
+      }}
+      if (backtestSortAscButton) {{
+        backtestSortAscButton.addEventListener("click", () => {{
+          backtestDecisionSort = "ASC";
           setBacktestFilterButtons();
           refreshBacktestDecisionTable();
         }});

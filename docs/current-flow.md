@@ -96,10 +96,25 @@ Feature and strategy path:
 - regime detection: [app/features/regime_features.py](../app/features/regime_features.py)
 - strategy router: [app/strategies/router.py](../app/strategies/router.py)
 - hybrid strategy: [app/strategies/hybrid.py](../app/strategies/hybrid.py)
+- pullback hybrid strategy: [app/strategies/hybrid_pullback.py](../app/strategies/hybrid_pullback.py)
+- pullback selector: [app/strategies/pullback_selector.py](../app/strategies/pullback_selector.py)
 - DCA strategy: [app/strategies/dca.py](../app/strategies/dca.py)
 - swing strategy: [app/strategies/swing_atr.py](../app/strategies/swing_atr.py)
+- pullback strategy: [app/strategies/pullback_trend.py](../app/strategies/pullback_trend.py)
 - order review/execution: [app/execution/order_manager.py](../app/execution/order_manager.py)
 - paper broker: [app/execution/paper_broker.py](../app/execution/paper_broker.py)
+
+Current profile behavior note:
+
+- `hybrid_current` still follows the legacy router path
+- `pullback_hybrid` runs pullback first, then uses a deterministic selector to decide whether DCA is allowed that cycle
+- selector traces are persisted inside backtest and cycle decision traces
+- the current LLM overlay is optional and score-aware, but it still sits after deterministic signal generation
+- current evaluation modes include:
+  - `llm_hard`
+  - `llm_soft`
+  - `llm_weighted`
+  - the legacy baselines (`random_20`, `rsi_70`, `volatility_2_5`)
 
 Persistent trading artifacts:
 
@@ -188,6 +203,7 @@ Load historical candles from parquet
 -> compute the same indicators used by the live trading runtime
 -> evaluate open swing stop-losses
 -> run the same regime and strategy path
+-> for `pullback_hybrid`, run pullback first and apply selector-based DCA permission
 -> stop early if the portfolio drawdown guard is breached
 -> execute on an isolated paper broker state
 -> record equity curve and trades
@@ -229,6 +245,36 @@ Saved simulation artifacts:
 
 - latest run: [data_lake/state/simulations/simulation_latest.json](../data_lake/state/simulations/simulation_latest.json)
 - run history: [data_lake/state/simulations/simulation_history.jsonl](../data_lake/state/simulations/simulation_history.jsonl)
+
+## 9. Evaluation Flow
+
+Entry point: [app/api/main.py](../app/api/main.py) and [app/evaluation/engine.py](../app/evaluation/engine.py)
+
+```text
+Read historical candles from parquet
+-> run a deterministic baseline replay
+-> run score-based comparison modes:
+   - llm_hard
+   - llm_soft
+   - llm_weighted
+   - random_20
+   - rsi_70
+   - volatility_2_5
+-> align per-step records
+-> calculate block precision, return, drawdown, Sharpe, score stats
+-> persist latest evaluation and history
+```
+
+Current evaluation record fields include:
+
+- baseline/overlay signal counts
+- baseline/overlay trade taken flags
+- `llm_action`
+- `llm_confidence`
+- `llm_score`
+- `llm_decision_present`
+- `llm_decision_valid`
+- `behavior_label`
 
 ## 8. Runtime Boundaries
 
