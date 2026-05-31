@@ -566,6 +566,8 @@ class BacktestEngine:
         """Clone config and redirect paper-trading artifacts to a temp directory."""
         config = copy.deepcopy(self.config)
         temp_dir = Path(tempfile.mkdtemp(prefix="adaptive-btc-backtest-"))
+        # Keep replay deterministic and disconnected from runtime LLM toggles.
+        config.llm.enabled = False
         config.execution.paper_state_path = str(temp_dir / "paper_broker_state.json")
         config.execution.paper_trade_log_path = str(temp_dir / "paper_trade_ledger.jsonl")
         config.execution.paper_cycle_log_path = str(temp_dir / "paper_cycle_log.jsonl")

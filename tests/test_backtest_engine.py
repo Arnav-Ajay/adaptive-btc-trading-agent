@@ -202,6 +202,32 @@ def test_backtest_engine_blocks_dca_entries_in_bearish_regime(tmp_path) -> None:
     assert all(step.decision in {"NO BUY", "HOLD"} for step in result.steps)
 
 
+def test_backtest_engine_disables_llm_even_when_runtime_toggle_is_enabled(tmp_path, monkeypatch) -> None:
+    """Replay should stay offline and deterministic regardless of runtime LLM settings."""
+    config = load_config()
+    config.data.data_lake_path = str(tmp_path)
+    config.data.min_candles_required = 20
+    config.trading.dca_order_size_usd = 100.0
+    config.trading.dca_enabled_in_bearish = True
+    config.execution.initial_cash_usd = 1_000.0
+    config.llm.enabled = True
+    config.env["OPENAI_API_KEY"] = "test-key"
+
+    store = ParquetMarketDataStore(str(tmp_path))
+    _write_backtest_candles(store)
+
+    def fail_post(*args, **kwargs):
+        raise AssertionError("Backtest should not call the live LLM endpoint")
+
+    monkeypatch.setattr("app.llm.advisor.requests.post", fail_post)
+
+    engine = BacktestEngine(config=config)
+    result = engine.run(symbol="BTC-USD", interval="1m")
+
+    assert result.metrics.filled_trade_count >= 1
+    assert all((step.llm_review or {}).get("enabled", False) is False for step in result.steps if step.llm_review is not None)
+
+
 def test_decision_cadence_changes_entry_frequency(tmp_path, monkeypatch) -> None:
     """Higher cadence frequencies should expose more entry opportunities."""
     config = load_config()

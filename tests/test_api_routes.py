@@ -21,7 +21,6 @@ def test_bitcoin_page_renders_navigation() -> None:
     assert 'href="/trades"' in response.text
     assert "Built by <strong>Arnav</strong> / <strong>Kaijo</strong>" in response.text
     assert "github.com/Arnav-Ajay" in response.text
-    assert 'href="/structure"' in response.text
 
 
 def test_llm_settings_endpoint_persists_runtime_override(monkeypatch) -> None:
@@ -50,13 +49,11 @@ def test_llm_settings_endpoint_persists_runtime_override(monkeypatch) -> None:
         assert refreshed.llm.enabled is True
 
 
-def test_structure_page_renders_debug_view() -> None:
-    """Structure debug page should render even without data."""
+def test_structure_page_is_removed() -> None:
+    """Structure debug page should no longer be exposed."""
     client = TestClient(app)
     response = client.get("/structure")
-    assert response.status_code == 200
-    assert "Structure Debug" in response.text
-    assert "HH / HL / LH / LL Labeling" in response.text
+    assert response.status_code == 404
 
 
 def test_trades_page_renders_trade_section() -> None:
@@ -84,6 +81,8 @@ def test_trades_page_can_render_backtest_summary() -> None:
     assert 'name="fee_pct"' in response.text
     assert 'name="spread_pct"' in response.text
     assert 'name="slippage_pct"' in response.text
+    assert "Pullback Only" not in response.text
+    assert "Pullback + DCA" not in response.text
 
 
 def test_trades_page_can_run_backtest_summary() -> None:
@@ -143,6 +142,8 @@ def test_trades_page_can_render_simulation_subview() -> None:
     assert "Strategy Parameter Sweep" in response.text
     assert "Simulation History" in response.text
     assert 'min="2025-01-01T00:00"' in response.text
+    assert "Pullback Only" not in response.text
+    assert "Pullback + DCA" not in response.text
 
 
 def test_trades_page_can_run_simulation() -> None:
@@ -211,7 +212,6 @@ def test_backtest_api_returns_summary() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["interval"] == "30m"
-    assert payload["decision_cadence_minutes"] == 30
     assert "metrics" in payload
     assert "execution_costs" in payload
 
@@ -230,13 +230,11 @@ def test_backtest_api_accepts_execution_cost_overrides() -> None:
     assert payload["execution_costs"]["slippage_pct"] == 0.0015
 
 
-def test_backtest_api_accepts_decision_cadence_override() -> None:
-    """Backtest API should accept an explicit decision cadence override."""
+def test_evaluation_api_is_removed() -> None:
+    """Experimental evaluation API should no longer be exposed."""
     client = TestClient(app)
-    response = client.get("/api/backtest?interval=30m&decision_cadence_minutes=5")
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["decision_cadence_minutes"] == 5
+    response = client.get("/api/evaluation")
+    assert response.status_code == 404
 
 
 def test_decision_breakdown_prefers_executed_swing_over_dca_skip_trace() -> None:

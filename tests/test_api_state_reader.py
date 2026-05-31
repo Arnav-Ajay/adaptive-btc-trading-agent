@@ -114,6 +114,25 @@ def test_load_dashboard_state_includes_simulation_artifacts() -> None:
         assert len(state["recent_simulations"]) == 1
 
 
+def test_load_dashboard_state_skips_evaluation_artifacts_by_default() -> None:
+    """Experimental evaluation payloads should stay out of default dashboard state loads."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        base_dir = Path(temp_dir)
+        config = _build_config(base_dir)
+        evaluation_dir = base_dir / "state" / "evaluations"
+        evaluation_dir.mkdir(parents=True, exist_ok=True)
+
+        (evaluation_dir / "evaluation_latest.json").write_text(json.dumps({"mode_results": [1]}), encoding="utf-8")
+        (evaluation_dir / "evaluation_history.jsonl").write_text(
+            json.dumps({"recorded_at": "2026-03-25T00:00:00+00:00"}) + "\n",
+            encoding="utf-8",
+        )
+
+        state = load_dashboard_state(config, include_candles=False)
+        assert state["latest_evaluation"] is None
+        assert state["recent_evaluations"] == []
+
+
 def test_load_dashboard_state_can_skip_backtest_and_simulation_artifacts() -> None:
     """Trades subviews should be able to avoid loading unrelated heavy history payloads."""
     with tempfile.TemporaryDirectory() as temp_dir:

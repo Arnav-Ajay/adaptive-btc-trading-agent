@@ -22,3 +22,13 @@ def test_latest_cycle_timestamp_reads_last_record(tmp_path: Path) -> None:
     ]
     log_path.write_text("\n".join(json.dumps(record) for record in records), encoding="utf-8")
     assert _latest_cycle_timestamp(log_path) == "2026-03-24T19:32:00+00:00"
+
+
+def test_latest_cycle_timestamp_skips_invalid_trailing_line(tmp_path: Path) -> None:
+    """Healthcheck should tolerate a partial trailing write and use the last valid cycle record."""
+    log_path = tmp_path / "cycle.jsonl"
+    log_path.write_text(
+        json.dumps({"cycle": 2, "recorded_at": "2026-03-24T19:32:00+00:00"}) + "\n" + '{"cycle":',
+        encoding="utf-8",
+    )
+    assert _latest_cycle_timestamp(log_path) == "2026-03-24T19:32:00+00:00"

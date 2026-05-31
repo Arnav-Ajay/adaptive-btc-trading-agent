@@ -76,7 +76,7 @@ def load_dashboard_state(
     include_paper: bool = True,
     include_backtests: bool = True,
     include_simulations: bool = True,
-    include_evaluations: bool = True,
+    include_evaluations: bool = False,
 ) -> dict[str, Any]:
     """Load the latest ingestion and trading artifacts for the dashboard."""
     ingestion_state = _load_json(Path(config.ingestion.state_path)) if include_ingestion else None

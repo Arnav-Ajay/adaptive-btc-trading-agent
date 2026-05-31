@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,6 +12,9 @@ from app.config.schema import AppConfig
 from app.execution.broker_interface import BrokerInterface
 from app.execution.cost_model import apply_buy_costs, apply_sell_costs
 from app.utils.models import OrderRequest, OrderResult, PortfolioSnapshot, SwingPosition, TradeFill, TradeSide
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -331,23 +335,13 @@ class PaperBroker(BrokerInterface):
     def _load_state(self) -> PaperBrokerState:
         """Load persisted broker state or initialize defaults."""
         if not self.state_path.exists():
-            return PaperBrokerState(
-                cash_usd=self.config.execution.initial_cash_usd,
-                dca_btc_units=0.0,
-                dca_avg_entry_price=0.0,
-                open_swing_positions=[],
-                last_mark_price=0.0,
-                peak_equity=self.config.execution.initial_cash_usd,
-                realized_pnl_usd=0.0,
-                total_fees_usd=0.0,
-                total_spread_cost_usd=0.0,
-                total_slippage_cost_usd=0.0,
-                updated_at=datetime.now(UTC).replace(microsecond=0).isoformat(),
-                latest_dca_buy_price=None,
-                recent_signal_keys=[],
-            )
+            return self._default_state()
 
-        payload = json.loads(self.state_path.read_text(encoding="utf-8"))
+        try:
+            payload = json.loads(self.state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            self._quarantine_corrupt_state(exc)
+            return self._default_state()
         if "dca_btc_units" not in payload:
             payload = {
                 "cash_usd": payload.get("cash_usd", self.config.execution.initial_cash_usd),
@@ -381,6 +375,35 @@ class PaperBroker(BrokerInterface):
         if payload.get("latest_dca_buy_price") is None:
             payload["latest_dca_buy_price"] = self._load_latest_dca_buy_price_from_ledger()
         return PaperBrokerState(**payload)
+
+    def _default_state(self) -> PaperBrokerState:
+        """Build a clean default state when no persisted state can be reused."""
+        return PaperBrokerState(
+            cash_usd=self.config.execution.initial_cash_usd,
+            dca_btc_units=0.0,
+            dca_avg_entry_price=0.0,
+            open_swing_positions=[],
+            last_mark_price=0.0,
+            peak_equity=self.config.execution.initial_cash_usd,
+            realized_pnl_usd=0.0,
+            total_fees_usd=0.0,
+            total_spread_cost_usd=0.0,
+            total_slippage_cost_usd=0.0,
+            updated_at=datetime.now(UTC).replace(microsecond=0).isoformat(),
+            latest_dca_buy_price=None,
+            recent_signal_keys=[],
+        )
+
+    def _quarantine_corrupt_state(self, exc: Exception) -> None:
+        """Preserve an unreadable state file and fall back to a clean default state."""
+        logger.error("Paper broker state could not be loaded from %s: %s", self.state_path, exc)
+        if not self.state_path.exists():
+            return
+        corrupt_path = self.state_path.with_suffix(f"{self.state_path.suffix}.corrupt")
+        try:
+            corrupt_path.write_text(self.state_path.read_text(encoding="utf-8"), encoding="utf-8")
+        except OSError:
+            logger.exception("Failed to preserve unreadable paper broker state at %s", corrupt_path)
 
     def _save_state(self) -> None:
         """Persist paper broker state atomically."""

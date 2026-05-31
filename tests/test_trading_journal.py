@@ -122,3 +122,15 @@ def test_trading_journal_persists_cycle_log_and_snapshot(tmp_path) -> None:
     trace_records = [json.loads(line) for line in decision_trace_path.read_text(encoding="utf-8").splitlines()]
     assert len(trace_records) == 1
     assert trace_records[0]["strategy_name"] == "SwingATRStrategy"
+
+
+def test_next_cycle_number_skips_partial_trailing_jsonl_record(tmp_path) -> None:
+    """Restart logic should ignore a malformed trailing line and continue from the last valid cycle."""
+    journal = TradingJournal(_build_config(tmp_path))
+    cycle_log_path = tmp_path / "cycle_log.jsonl"
+    cycle_log_path.write_text(
+        json.dumps({"cycle": 7, "recorded_at": "2026-03-24T19:02:00+00:00"}) + "\n" + '{"cycle":',
+        encoding="utf-8",
+    )
+
+    assert journal.next_cycle_number() == 8

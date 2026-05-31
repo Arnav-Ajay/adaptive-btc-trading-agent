@@ -269,3 +269,17 @@ def test_latest_buy_price_uses_most_recent_buy_fill_across_strategies(tmp_path) 
     )
     assert second_buy.accepted is True
     assert broker.latest_buy_price() == pytest.approx(70_920.0492)
+
+
+def test_paper_broker_recovers_from_corrupt_state_file(tmp_path) -> None:
+    """Unreadable state JSON should not prevent the broker from starting."""
+    config = _build_config(tmp_path)
+    state_path = Path(config.execution.paper_state_path)
+    state_path.write_text("{not-valid-json", encoding="utf-8")
+
+    broker = PaperBroker(config)
+
+    snapshot = broker.get_portfolio_snapshot()
+    assert snapshot.cash_usd == pytest.approx(config.execution.initial_cash_usd)
+    assert snapshot.btc_units == 0.0
+    assert state_path.with_suffix(".json.corrupt").exists()

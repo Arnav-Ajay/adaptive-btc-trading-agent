@@ -20,13 +20,9 @@ from app.backtest.history import save_backtest_result
 from app.api.state_reader import load_dashboard_state
 from app.data.parquet_market_data import ParquetMarketDataClient
 from app.config.settings import _append_runtime_audit, load_config
-from app.evaluation.engine import EvaluationEngine
-from app.evaluation.history import save_evaluation_result
-from app.features.regime_features import extract_swing_points
 from app.strategies.profiles import STRATEGY_PROFILES, normalize_strategy_profile, strategy_profile_label
 from app.simulation.engine import SimulationEngine
 from app.simulation.history import save_simulation_result
-from app.utils.models import Candle
 
 
 logger = logging.getLogger(__name__)
@@ -98,7 +94,6 @@ def _nav(active: str) -> str:
       <nav class="nav">
         <a class="{cls('bitcoin')}" href="/bitcoin">Bitcoin</a>
         <a class="{cls('trades')}" href="/trades">Trades</a>
-        <a class="{cls('structure')}" href="/structure">Structure</a>
       </nav>
     </header>
     """
@@ -322,58 +317,6 @@ def _volatility_label(atr: float, price: float) -> str:
     if ratio >= 0.15:
         return "Medium"
     return "Low"
-
-
-def _label_swing_points(
-    candles: list[dict[str, object]],
-    *,
-    lookback: int,
-    pivot_span: int,
-    min_move_percent: float,
-) -> list[dict[str, object]]:
-    """Label swing highs/lows as HH/HL/LH/LL for debug visualization."""
-    if not candles:
-        return []
-    parsed = [
-        Candle(
-            timestamp=datetime.fromisoformat(str(candle["timestamp"])),
-            open=float(candle["open"]),
-            high=float(candle["high"]),
-            low=float(candle["low"]),
-            close=float(candle["close"]),
-            volume=float(candle["volume"]),
-        )
-        for candle in candles
-    ]
-    swings = extract_swing_points(
-        parsed,
-        lookback=lookback,
-        pivot_span=pivot_span,
-        min_move_percent=min_move_percent,
-        enforce_alternation=True,
-    )
-    labeled: list[dict[str, object]] = []
-    last_high = None
-    last_low = None
-    for swing in swings:
-        label = "H" if swing.kind == "high" else "L"
-        if swing.kind == "high" and last_high is not None:
-            label = "HH" if swing.price > last_high else "LH" if swing.price < last_high else "H"
-        if swing.kind == "low" and last_low is not None:
-            label = "HL" if swing.price > last_low else "LL" if swing.price < last_low else "L"
-        if swing.kind == "high":
-            last_high = swing.price
-        else:
-            last_low = swing.price
-        labeled.append(
-            {
-                "timestamp": swing.timestamp,
-                "price": swing.price,
-                "label": label,
-                "kind": swing.kind,
-            }
-        )
-    return labeled
 
 
 def _decision_breakdown(latest_cycle: dict[str, object] | None, latest_trace: dict[str, object] | None) -> dict[str, object]:
@@ -1015,7 +958,6 @@ def _configured_backtest_config(
     fee_pct: float,
     spread_pct: float,
     slippage_pct: float,
-    decision_cadence_minutes: int,
 ) -> object:
     """Clone config and apply backtest-specific execution-cost overrides."""
     config = copy.deepcopy(base_config)
@@ -1023,7 +965,6 @@ def _configured_backtest_config(
     config.execution.fee_pct = fee_pct
     config.execution.spread_pct = spread_pct
     config.execution.slippage_pct = slippage_pct
-    config.runtime.decision_cadence_minutes = decision_cadence_minutes
     return config
 
 
@@ -1134,7 +1075,6 @@ def api_backtest(
     fee_pct: float = Query(default=0.001, ge=0.0, le=0.1),
     spread_pct: float = Query(default=0.0005, ge=0.0, le=0.1),
     slippage_pct: float = Query(default=0.0005, ge=0.0, le=0.1),
-    decision_cadence_minutes: int = Query(default=30, ge=1),
 ) -> dict[str, object]:
     """Run a historical backtest over parquet candles and return summary output."""
     base_config = load_config()
@@ -1144,7 +1084,6 @@ def api_backtest(
         fee_pct=fee_pct,
         spread_pct=spread_pct,
         slippage_pct=slippage_pct,
-        decision_cadence_minutes=decision_cadence_minutes,
     )
     engine = BacktestEngine(config)
     strategy_profile = normalize_strategy_profile(strategy)
@@ -1167,7 +1106,6 @@ def api_backtest(
         "symbol": payload["symbol"],
         "strategy_profile": payload["strategy_profile"],
         "interval": payload["interval"],
-        "decision_cadence_minutes": payload["decision_cadence_minutes"],
         "start_at": payload["start_at"],
         "end_at": payload["end_at"],
         "candles_processed": payload["candles_processed"],
@@ -1208,44 +1146,6 @@ def api_backtest(
             for step in payload["steps"]
         ],
     }
-
-
-@app.get("/api/evaluation")
-def api_evaluation(
-    symbol: str | None = None,
-    interval: str = Query(default="30m"),
-    strategy: str = Query(default="hybrid_current"),
-    start: str | None = None,
-    end: str | None = None,
-    modes: str = Query(default="baseline,llm,random_20,rsi_70,volatility_2_5"),
-    random_block_rate: float = Query(default=0.2, ge=0.0, le=1.0),
-    rsi_block_threshold: float = Query(default=70.0, ge=0.0, le=100.0),
-    volatility_block_threshold_percent: float = Query(default=2.5, ge=0.0, le=100.0),
-) -> dict[str, object]:
-    """Run counterfactual evaluation modes against the same historical window."""
-    base_config = load_config()
-    mode_list = [mode.strip() for mode in modes.split(",") if mode.strip()]
-    engine = EvaluationEngine(base_config)
-    end_at = _parse_optional_iso_datetime(end)
-    start_at = _parse_optional_iso_datetime(start)
-    if start_at is None:
-        start_at = _default_backtest_start(interval=interval, end_at=end_at or datetime.now(UTC))
-    try:
-        result = engine.run(
-            symbol=symbol or base_config.trading.symbol,
-            interval=interval,
-            start_at=start_at,
-            end_at=end_at,
-            strategy_profile=normalize_strategy_profile(strategy),
-            modes=mode_list,
-            random_block_rate=random_block_rate,
-            rsi_block_threshold=rsi_block_threshold,
-            volatility_block_threshold_percent=volatility_block_threshold_percent,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    payload = save_evaluation_result(base_config.data.data_lake_path, result)
-    return payload
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1912,141 +1812,6 @@ def bitcoin_page() -> str:
     return _base_html("Bitcoin | Adaptive BTC Trading Agent", "bitcoin", body, script)
 
 
-@app.get("/structure", response_class=HTMLResponse)
-def structure_page(
-    interval: str = Query(default="1m"),
-    lookback: int = Query(default=400, ge=50, le=4000),
-    pivot_span: int = Query(default=3, ge=1, le=5),
-    min_move_percent: float = Query(default=0.3, ge=0.0, le=5.0),
-) -> str:
-    """Render a debug view for HH/HL/LH/LL swing structure labeling."""
-    config = load_config()
-    client = ParquetMarketDataClient(config=config)
-    candles = client.fetch_dashboard_candles(interval=interval, limit=lookback)
-    serialized = [
-        {
-            "timestamp": candle.timestamp.replace(microsecond=0).isoformat(),
-            "open": candle.open,
-            "high": candle.high,
-            "low": candle.low,
-            "close": candle.close,
-            "volume": candle.volume,
-        }
-        for candle in candles
-    ]
-    swing_labels = _label_swing_points(
-        serialized,
-        lookback=lookback,
-        pivot_span=pivot_span,
-        min_move_percent=min_move_percent,
-    )
-    chart_width_px = max(1200, len(serialized) * 6)
-    payload = json.dumps({"candles": serialized, "swings": swing_labels})
-    body = f"""
-    <section class="panel chart-card">
-      <div class="chart-panel-head">
-        <div>
-          <div class="label">Structure Debug</div>
-          <div class="chart-title">HH / HL / LH / LL Labeling</div>
-          <div class="chart-note">Scrollable view for verifying swing labeling. Interval {escape(interval)}, lookback {lookback}, pivot span {pivot_span}.</div>
-        </div>
-      </div>
-      <form method="get" action="/structure" class="filter-grid" style="display:grid; grid-template-columns:180px 180px 180px 180px auto;">
-        <div class="field">
-          <label for="structureInterval">Interval</label>
-          <select id="structureInterval" name="interval">
-            <option value="1m" {'selected' if interval == '1m' else ''}>1m</option>
-            <option value="10m" {'selected' if interval == '10m' else ''}>10m</option>
-            <option value="30m" {'selected' if interval == '30m' else ''}>30m</option>
-            <option value="1hr" {'selected' if interval == '1hr' else ''}>1hr</option>
-            <option value="1d" {'selected' if interval == '1d' else ''}>1d</option>
-          </select>
-        </div>
-        <div class="field">
-          <label for="structureLookback">Lookback</label>
-          <input id="structureLookback" type="number" name="lookback" min="50" max="4000" step="10" value="{lookback}" />
-        </div>
-        <div class="field">
-          <label for="structurePivot">Pivot Span</label>
-          <input id="structurePivot" type="number" name="pivot_span" min="1" max="5" step="1" value="{pivot_span}" />
-        </div>
-        <div class="field">
-          <label for="structureMinMove">Min Move %</label>
-          <input id="structureMinMove" type="number" name="min_move_percent" min="0" max="5" step="0.1" value="{min_move_percent:.1f}" />
-        </div>
-        <div class="filter-actions" style="align-items:end;">
-          <button class="ghost" type="submit">Apply</button>
-        </div>
-      </form>
-      <div class="trade-chart-frame" style="margin-top:.9rem;">
-        <div style="overflow-x:auto;">
-          <div id="structureChart" class="chart-surface" style="height:520px; width:{chart_width_px}px;"></div>
-        </div>
-      </div>
-    </section>
-    <script id="structure-data" type="application/json">{payload}</script>
-    """
-    script = """
-    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-    <script>
-      const payload = JSON.parse(document.getElementById("structure-data").textContent || "{}");
-      const candles = payload.candles || [];
-      const swings = payload.swings || [];
-      const chartEl = document.getElementById("structureChart");
-      const x = candles.map(c => c.timestamp);
-      const opens = candles.map(c => Number(c.open));
-      const highs = candles.map(c => Number(c.high));
-      const lows = candles.map(c => Number(c.low));
-      const closes = candles.map(c => Number(c.close));
-      const swingX = swings.map(s => s.timestamp);
-      const swingY = swings.map(s => Number(s.price));
-      const swingText = swings.map(s => s.label);
-      const swingColor = swings.map(s => s.kind === "high" ? "#f59e0b" : "#3b82f6");
-      const traces = [
-        {
-          type: "candlestick",
-          x,
-          open: opens,
-          high: highs,
-          low: lows,
-          close: closes,
-          increasing: { line: { color: "#16c784", width: 1.2 }, fillcolor: "#16c784" },
-          decreasing: { line: { color: "#ea3943", width: 1.2 }, fillcolor: "#ea3943" },
-          whiskerwidth: 0.5,
-          hoverlabel: { namelength: 0 },
-          hovertemplate:
-            "%{x|%b %d, %-I:%M %p}<br>" +
-            "Open: %{open:$,.2f}<br>" +
-            "High: %{high:$,.2f}<br>" +
-            "Low: %{low:$,.2f}<br>" +
-            "Close: %{close:$,.2f}<extra></extra>",
-        },
-        {
-          type: "scatter",
-          mode: "markers+text",
-          x: swingX,
-          y: swingY,
-          text: swingText,
-          textposition: "top center",
-          marker: { size: 8, color: swingColor, line: { color: "#0f172a", width: 1 } },
-          textfont: { color: "#e2e8f0", size: 12 },
-          hovertemplate: "%{x}<br>%{text} @ %{y:$,.2f}<extra></extra>",
-        },
-      ];
-      const layout = {
-        paper_bgcolor: "rgba(13,21,32,1)",
-        plot_bgcolor: "rgba(13,21,32,1)",
-        margin: { t: 24, r: 36, b: 44, l: 56, pad: 12 },
-        showlegend: false,
-        xaxis: { type: "date", showgrid: false, zeroline: false, tickfont: { color: "rgba(148,163,184,0.8)" } },
-        yaxis: { showgrid: true, gridcolor: "rgba(255,255,255,0.06)", zeroline: false, tickfont: { color: "rgba(203,213,225,0.82)" }, tickformat: "$,.0f" },
-      };
-      Plotly.react(chartEl, traces, layout, { responsive: false, displayModeBar: false, scrollZoom: true });
-    </script>
-    """
-    return _base_html("Structure | Adaptive BTC Trading Agent", "structure", body, script)
-
-
 @app.get("/trades", response_class=HTMLResponse)
 def trades_page(
     run_backtest: int = Query(default=0, ge=0, le=1),
@@ -2060,7 +1825,6 @@ def trades_page(
     fee_pct: float = Query(default=0.001, ge=0.0, le=0.1),
     spread_pct: float = Query(default=0.0005, ge=0.0, le=0.1),
     slippage_pct: float = Query(default=0.0005, ge=0.0, le=0.1),
-    decision_cadence_minutes: int = Query(default=30, ge=1),
     backtest_recorded_at: str | None = None,
     backtest_run_idx: int | None = Query(default=None, ge=0),
     simulation_run_idx: int | None = Query(default=None, ge=0),
@@ -2161,7 +1925,6 @@ def trades_page(
     selected_fee_pct = fee_pct if fee_pct is not None else config.execution.fee_pct
     selected_spread_pct = spread_pct if spread_pct is not None else config.execution.spread_pct
     selected_slippage_pct = slippage_pct if slippage_pct is not None else config.execution.slippage_pct
-    selected_decision_cadence_minutes = decision_cadence_minutes if decision_cadence_minutes is not None else config.runtime.decision_cadence_minutes
     selected_sim_rsi_values = sim_rsi_values or "35,40,45"
     selected_sim_take_profit_values = sim_take_profit_values or "1.5,2.0"
     selected_sim_no_follow_values = sim_no_follow_values or "2,3"
@@ -2415,7 +2178,7 @@ def trades_page(
           <form method="get" action="/trades" style="margin-top:.9rem; display:grid; gap:.8rem;">
             <input type="hidden" name="mode" value="backtest" />
             <input type="hidden" name="run_backtest" value="1" />
-            <div class="filter-grid" style="display:grid; grid-template-columns:180px 220px 180px 1fr 1fr auto;">
+            <div class="filter-grid" style="display:grid; grid-template-columns:180px 220px 1fr 1fr auto;">
               <div class="field">
                 <label for="backtestInterval">Interval</label>
                 <select id="backtestInterval" name="interval">
@@ -2431,10 +2194,6 @@ def trades_page(
                 <select id="backtestStrategy" name="strategy">
                   {''.join(f"<option value=\"{profile}\" {'selected' if selected_strategy_profile == profile else ''}>{escape(strategy_profile_label(profile))}</option>" for profile in STRATEGY_PROFILES)}
                 </select>
-              </div>
-              <div class="field">
-                <label for="backtestCadence">Decision Cadence</label>
-                <input id="backtestCadence" type="number" name="decision_cadence_minutes" min="1" step="1" value="{selected_decision_cadence_minutes}" />
               </div>
               <div class="field">
                 <label for="backtestStart">Start</label>
@@ -2483,7 +2242,6 @@ def trades_page(
                 fee_pct=selected_fee_pct,
                 spread_pct=selected_spread_pct,
                 slippage_pct=selected_slippage_pct,
-                decision_cadence_minutes=selected_decision_cadence_minutes,
             )
             backtest_result = BacktestEngine(backtest_config).run(
                 symbol=config.trading.symbol,
@@ -2632,7 +2390,6 @@ def trades_page(
               </div>
               <div class="market-mini" style="margin-top:.35rem; margin-bottom:.95rem;">
                 <div class="mini-row"><div class="mini-label">Strategy</div><div class="mini-value">{escape(strategy_profile_label(str(selected_backtest.get('strategy_profile', 'hybrid_current'))))}</div></div>
-                <div class="mini-row"><div class="mini-label">Decision Cadence</div><div class="mini-value">{int(selected_backtest.get('decision_cadence_minutes', selected_decision_cadence_minutes))}m</div></div>
                 <div class="mini-row"><div class="mini-label">Replay Window</div><div class="mini-value">{escape(_format_display_timestamp(str(selected_backtest.get('start_at', ''))))} to {escape(_format_display_timestamp(str(selected_backtest.get('end_at', ''))))}</div></div>
                 <div class="mini-row"><div class="mini-label">Saved Run</div><div class="mini-value">{escape(_format_display_timestamp(str(selected_backtest.get('recorded_at', ''))))}</div></div>
                 <div class="mini-row"><div class="mini-label">Run End</div><div class="mini-value">{escape(_format_display_timestamp(halted_at)) if halted_at else 'Completed selected window'}</div></div>
@@ -2727,7 +2484,7 @@ def trades_page(
           <form method="get" action="/trades" style="margin-top:.9rem; display:grid; gap:.8rem;">
             <input type="hidden" name="mode" value="simulation" />
             <input type="hidden" name="run_simulation" value="1" />
-            <div class="filter-grid" style="display:grid; grid-template-columns:180px 220px 180px 1fr 1fr auto;">
+            <div class="filter-grid" style="display:grid; grid-template-columns:180px 220px 1fr 1fr auto;">
               <div class="field">
                 <label for="simulationInterval">Interval</label>
                 <select id="simulationInterval" name="interval">
@@ -2743,10 +2500,6 @@ def trades_page(
                 <select id="simulationStrategy" name="strategy">
                   {''.join(f"<option value=\"{profile}\" {'selected' if selected_strategy_profile == profile else ''}>{escape(strategy_profile_label(profile))}</option>" for profile in STRATEGY_PROFILES)}
                 </select>
-              </div>
-              <div class="field">
-                <label for="simulationCadence">Decision Cadence</label>
-                <input id="simulationCadence" type="number" name="decision_cadence_minutes" min="1" step="1" value="{selected_decision_cadence_minutes}" />
               </div>
               <div class="field">
                 <label for="simulationStart">Start</label>
@@ -2804,7 +2557,6 @@ def trades_page(
                 "swing_follow_through_buffer_percent": _parse_float_sweep(sim_follow_buffer_values, [0.1, 0.2]),
                 "atr_multiplier": _parse_float_sweep(sim_atr_values, [1.5, 2.0]),
             }
-            config.runtime.decision_cadence_minutes = selected_decision_cadence_minutes
             simulation_result = SimulationEngine(config).run(
                 symbol=config.trading.symbol,
                 interval=interval,
@@ -2881,7 +2633,6 @@ def trades_page(
               </div>
               <div class="market-mini" style="margin-top:.35rem; margin-bottom:.95rem;">
                 <div class="mini-row"><div class="mini-label">Strategy</div><div class="mini-value">{escape(strategy_profile_label(str(selected_simulation.get('strategy_profile', 'hybrid_current'))))}</div></div>
-                <div class="mini-row"><div class="mini-label">Decision Cadence</div><div class="mini-value">{int(selected_simulation.get('decision_cadence_minutes', selected_decision_cadence_minutes))}m</div></div>
                 <div class="mini-row"><div class="mini-label">Replay Window</div><div class="mini-value">{escape(_format_display_timestamp(str(selected_simulation.get('start_at', ''))))} to {escape(_format_display_timestamp(str(selected_simulation.get('end_at', ''))))}</div></div>
                 <div class="mini-row"><div class="mini-label">Saved Run</div><div class="mini-value">{escape(_format_display_timestamp(str(selected_simulation.get('recorded_at', ''))))}</div></div>
                 <div class="mini-row"><div class="mini-label">Candidates Tested</div><div class="mini-value">{int(selected_simulation.get('candidate_count', 0))}</div></div>

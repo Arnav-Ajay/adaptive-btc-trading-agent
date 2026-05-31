@@ -21,10 +21,14 @@ def _latest_cycle_timestamp(path: Path) -> str | None:
     if not path.exists():
         return None
     lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    if not lines:
-        return None
-    record = json.loads(lines[-1])
-    return record.get("recorded_at")
+    for line in reversed(lines):
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(record, dict):
+            return record.get("recorded_at")
+    return None
 
 
 def main() -> int:

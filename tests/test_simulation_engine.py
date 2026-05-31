@@ -80,3 +80,44 @@ def test_simulation_engine_runs_parameter_sweep(tmp_path) -> None:
     assert len(result.candidates) == 2
     assert result.best_candidate_id == result.candidates[0].candidate_id
     assert result.decision_cadence_minutes == config.runtime.decision_cadence_minutes
+
+
+def test_simulation_engine_is_repeatable_for_same_inputs(tmp_path) -> None:
+    """Simulation should return the same ranked candidates for the same parquet data and config."""
+    config = load_config()
+    config.data.data_lake_path = str(tmp_path)
+    config.data.min_candles_required = 20
+    config.execution.initial_cash_usd = 1_000.0
+    config.trading.dca_order_size_usd = 0.0
+    config.llm.enabled = True
+    config.env["OPENAI_API_KEY"] = "test-key"
+
+    store = ParquetMarketDataStore(str(tmp_path))
+    _write_simulation_candles(store, interval="30m", step_minutes=30, count=40)
+    backtest_engine_module.detect_regime_score = lambda window, features: _fake_regime_state()
+
+    parameter_grid = {
+        "swing_entry_rsi_max": [35.0, 45.0],
+        "swing_take_profit_percent": [2.0],
+        "swing_no_follow_through_candles": [3],
+        "swing_follow_through_buffer_percent": [0.2],
+        "atr_multiplier": [1.5],
+    }
+
+    first = SimulationEngine(config).run(
+        symbol="BTC-USD",
+        interval="30m",
+        parameter_grid=parameter_grid,
+    )
+    second = SimulationEngine(config).run(
+        symbol="BTC-USD",
+        interval="30m",
+        parameter_grid=parameter_grid,
+    )
+
+    assert first.best_candidate_id == second.best_candidate_id
+    assert first.candidate_count == second.candidate_count
+    assert [candidate.params for candidate in first.candidates] == [candidate.params for candidate in second.candidates]
+    assert [candidate.result.metrics.total_return_percent for candidate in first.candidates] == [
+        candidate.result.metrics.total_return_percent for candidate in second.candidates
+    ]

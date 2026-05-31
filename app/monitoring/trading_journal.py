@@ -22,13 +22,24 @@ class TradingJournal:
 
     def next_cycle_number(self) -> int:
         """Return the next sequential cycle number for journal records."""
-        if not self.cycle_log_path.exists():
+        latest_record = self._latest_valid_cycle_record()
+        if latest_record is None:
             return 1
-        lines = [line for line in self.cycle_log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-        if not lines:
-            return 1
-        latest_record = json.loads(lines[-1])
         return int(latest_record.get("cycle", 0)) + 1
+
+    def _latest_valid_cycle_record(self) -> dict[str, object] | None:
+        """Return the last valid JSON cycle record, skipping partial trailing lines."""
+        if not self.cycle_log_path.exists():
+            return None
+        lines = [line for line in self.cycle_log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        for line in reversed(lines):
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                return payload
+        return None
 
     def record_cycle(
         self,
