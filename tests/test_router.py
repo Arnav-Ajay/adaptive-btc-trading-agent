@@ -16,6 +16,7 @@ from app.config.schema import (
 from app.strategies.hybrid import HybridStrategy
 from app.strategies.dca import DCAStrategy
 from app.strategies.router import StrategyRouter
+from app.strategies.swing_atr import SwingATRStrategy
 from app.utils.models import MarketRegime
 
 
@@ -91,3 +92,15 @@ def test_router_uses_dca_when_scored_regime_is_negative() -> None:
         deterioration_score=0.3,
     )
     assert isinstance(strategy, DCAStrategy)
+
+
+def test_router_honors_explicit_strategy_profile_override() -> None:
+    """A configured live strategy profile should override the regime-based router choice."""
+    router = StrategyRouter(config=_build_config())
+    swing_strategy = router.select(MarketRegime.BEARISH, strategy_profile="swing_only")
+    dca_strategy = router.select(MarketRegime.BULLISH, strategy_profile="dca_only")
+    hybrid_strategy = router.select(MarketRegime.BEARISH, strategy_profile="hybrid_current")
+
+    assert isinstance(swing_strategy, SwingATRStrategy)
+    assert isinstance(dca_strategy, DCAStrategy)
+    assert isinstance(hybrid_strategy, HybridStrategy)

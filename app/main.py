@@ -120,6 +120,7 @@ def run_cycle(config: AppConfig | None = None) -> None:
     context.portfolio_snapshot = snapshot
     strategy = router.select(
         regime,
+        strategy_profile=config.trading.strategy_profile,
         bullish_trend=features.ema_fast > features.ema_slow,
         has_open_swing_positions=bool(context.active_swing_positions),
         regime_score=regime_state.regime_score,

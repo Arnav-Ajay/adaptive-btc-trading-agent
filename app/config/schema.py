@@ -12,6 +12,7 @@ class TradingConfig:
     """Trading-related configuration values."""
 
     symbol: str = "BTC-USD"
+    strategy_profile: str = "hybrid_current"
     dca_drop_percent: float = 1.5
     dca_order_size_usd: float = 100.0
     dca_enabled_in_bearish: bool = False

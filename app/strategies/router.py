@@ -5,6 +5,7 @@ from __future__ import annotations
 from app.config.schema import AppConfig
 from app.strategies.dca import DCAStrategy
 from app.strategies.hybrid import HybridStrategy
+from app.strategies.profiles import STRATEGY_PROFILES, normalize_strategy_profile
 from app.strategies.swing_atr import SwingATRStrategy
 from app.utils.models import MarketRegime
 
@@ -22,6 +23,7 @@ class StrategyRouter:
     def select(
         self,
         regime: MarketRegime,
+        strategy_profile: str | None = None,
         bullish_trend: bool = False,
         has_open_swing_positions: bool = False,
         regime_score: float | None = None,
@@ -29,6 +31,17 @@ class StrategyRouter:
         deterioration_score: float | None = None,
     ) -> DCAStrategy | SwingATRStrategy | HybridStrategy:
         """Select a strategy for the current market regime."""
+        normalized_profile = normalize_strategy_profile(strategy_profile)
+        if normalized_profile not in STRATEGY_PROFILES:
+            normalized_profile = "hybrid_current"
+        if normalized_profile == "dca_only":
+            return self.dca
+        if normalized_profile == "swing_only":
+            return self.swing
+        if normalized_profile == "hybrid_current":
+            return self.hybrid
+        if normalized_profile == "buy_and_hold":
+            normalized_profile = "hybrid_current"
         if has_open_swing_positions:
             return self.hybrid
         if regime_score is not None and regime_confidence is not None:

@@ -10,5 +10,7 @@ coinbase-advanced-py
 pytest
 requests
 python-dotenv
+gspread
+google-auth
 
 matplotlib

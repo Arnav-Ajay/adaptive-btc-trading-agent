@@ -1068,7 +1068,7 @@ def api_trades(limit: int = Query(default=25, ge=1, le=250)) -> dict[str, object
 def api_backtest(
     symbol: str | None = None,
     interval: str = Query(default="30m"),
-    strategy: str = Query(default="hybrid_current"),
+    strategy: str | None = Query(default=None),
     start: str | None = None,
     end: str | None = None,
     execution_cost_preset: str = Query(default="simple"),
@@ -1086,7 +1086,7 @@ def api_backtest(
         slippage_pct=slippage_pct,
     )
     engine = BacktestEngine(config)
-    strategy_profile = normalize_strategy_profile(strategy)
+    strategy_profile = normalize_strategy_profile(strategy or config.trading.strategy_profile)
     end_at = _parse_optional_iso_datetime(end)
     start_at = _parse_optional_iso_datetime(start)
     if start_at is None:
@@ -1838,8 +1838,8 @@ def trades_page(
     view_mode = "simulation" if run_simulation else "backtest" if run_backtest else mode.lower()
     if view_mode not in {"paper", "backtest", "simulation"}:
         view_mode = "paper"
-    selected_strategy_profile = normalize_strategy_profile(strategy)
     config = load_config()
+    selected_strategy_profile = normalize_strategy_profile(strategy or config.trading.strategy_profile)
     replay_lower_bound, replay_upper_bound = _available_replay_bounds(config)
     include_trade_chart = view_mode == "paper"
     state = load_dashboard_state(

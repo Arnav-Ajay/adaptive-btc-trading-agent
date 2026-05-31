@@ -6,6 +6,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +17,7 @@ from app.execution.cost_model import resolve_execution_costs
 
 
 logger = logging.getLogger(__name__)
+GOOGLE_SHEETS_CACHE_MAX_AGE = timedelta(hours=1)
 
 
 def _load_env() -> dict[str, Any]:
@@ -33,13 +36,42 @@ def _load_local_cache(path: Path) -> dict[str, Any]:
     """Load the local JSON configuration cache."""
     if not path.exists():
         return {}
-    with path.open("r", encoding="utf-8") as handle:
-        return json.load(handle)
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Failed to load config cache at %s: %s", path, exc)
+        return {}
 
 
 def _load_runtime_overrides(path: Path) -> dict[str, Any]:
     """Load runtime overrides written by the dashboard."""
     return _load_local_cache(path)
+
+
+def _write_local_cache(path: Path, payload: dict[str, Any]) -> None:
+    """Persist the latest successful sheet-backed configuration atomically."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as handle:
+        json.dump(payload, handle, indent=2)
+        handle.write("\n")
+        temp_path = Path(handle.name)
+    temp_path.replace(path)
+
+
+def _cache_is_fresh(cache_data: dict[str, Any]) -> bool:
+    """Return whether the sheet-backed cache is still within the refresh window."""
+    meta = cache_data.get("_meta", {})
+    if not isinstance(meta, dict):
+        return False
+    fetched_at = meta.get("fetched_at")
+    if not isinstance(fetched_at, str) or not fetched_at.strip():
+        return False
+    try:
+        fetched_at_dt = datetime.fromisoformat(fetched_at).astimezone(UTC)
+    except ValueError:
+        return False
+    return (datetime.now(UTC) - fetched_at_dt) < GOOGLE_SHEETS_CACHE_MAX_AGE
 
 
 def _append_runtime_audit(path: Path, payload: dict[str, Any]) -> None:
@@ -75,6 +107,7 @@ def _apply_env_overrides(base_config: dict[str, Any], env: dict[str, Any]) -> di
     execution = dict(base_config.get("execution", {}))
 
     trading["symbol"] = env.get("TRADING_SYMBOL", trading.get("symbol", "BTC-USD"))
+    trading["strategy_profile"] = env.get("TRADING_STRATEGY_PROFILE", trading.get("strategy_profile", "hybrid_current"))
     trading["dca_drop_percent"] = float(env.get("DCA_DROP_PERCENT", trading.get("dca_drop_percent", 1.5)))
     trading["dca_order_size_usd"] = float(
         env.get("DCA_ORDER_SIZE_USD", trading.get("dca_order_size_usd", 100.0))
@@ -370,7 +403,15 @@ def load_config() -> AppConfig:
     runtime_overrides = _load_runtime_overrides(runtime_overrides_path)
 
     sheet_loader = GoogleSheetConfigLoader.from_env(env)
-    sheet_data = sheet_loader.load() if sheet_loader.enabled else {}
+    sheet_data: dict[str, Any] = {}
+    if sheet_loader.enabled:
+        if _cache_is_fresh(cache_data):
+            sheet_data = {}
+        else:
+            sheet_data = sheet_loader.load()
+            if sheet_data:
+                _write_local_cache(cache_path, sheet_data)
+                cache_data = dict(sheet_data)
 
     merged = {}
     merged.update(cache_data)
