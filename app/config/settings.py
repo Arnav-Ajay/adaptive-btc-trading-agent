@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -79,6 +80,36 @@ def _append_runtime_audit(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload) + "\n")
+
+
+def _path_has_contents(path: Path) -> bool:
+    """Return whether a directory exists and contains at least one file-system entry."""
+    return path.exists() and any(path.iterdir())
+
+
+def _maybe_bootstrap_demo_data(env: dict[str, Any], merged_config: dict[str, Any]) -> None:
+    """Populate the runtime data_lake from bundled demo assets when demo mode is enabled."""
+    if not _parse_bool(env.get("DEMO_MODE"), bool(merged_config.get("demo_mode", False))):
+        return
+
+    data = dict(merged_config.get("data", {}))
+    data_lake_path = Path(str(data.get("data_lake_path", "data_lake")))
+    if _path_has_contents(data_lake_path):
+        return
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundled_demo_lake = repo_root / "demo_assets" / "data_lake"
+    if not _path_has_contents(bundled_demo_lake):
+        logger.warning(
+            "Demo mode is enabled but bundled demo data is missing at %s",
+            bundled_demo_lake,
+        )
+        return
+
+    if data_lake_path.exists():
+        shutil.rmtree(data_lake_path)
+    shutil.copytree(bundled_demo_lake, data_lake_path)
+    logger.info("Bootstrapped demo data lake from %s to %s", bundled_demo_lake, data_lake_path)
 
 
 def _parse_bool(raw_value: str | None, default: bool) -> bool:
@@ -422,5 +453,6 @@ def load_config() -> AppConfig:
     merged["env"] = env
     merged["cache_path"] = str(cache_path)
     merged["runtime_overrides_path"] = str(runtime_overrides_path)
+    _maybe_bootstrap_demo_data(env, merged)
 
     return AppConfig.from_mapping(merged)
