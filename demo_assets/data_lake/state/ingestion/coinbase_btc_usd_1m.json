@@ -1,0 +1,49 @@
+{
+  "last_successful_run_at": "2026-06-01T16:02:04+00:00",
+  "last_ingested_timestamp": "2026-06-01T15:59:00+00:00",
+  "rows_written": 30,
+  "provider": "coinbase",
+  "metadata": {
+    "rows_received": 90,
+    "rows_read_existing": 930,
+    "final_rows_persisted": 960,
+    "partitions_updated": 1,
+    "duration_ms": 124399,
+    "symbol": "BTC-USD",
+    "interval": "1m",
+    "source_gap_count": 0,
+    "lake_gap_count": 0,
+    "derived_intervals": [
+      {
+        "interval": "10m",
+        "rows_written": 3,
+        "final_rows_persisted": 74328
+      },
+      {
+        "interval": "30m",
+        "rows_written": 1,
+        "final_rows_persisted": 24777
+      },
+      {
+        "interval": "1hr",
+        "rows_written": 0,
+        "final_rows_persisted": 12390
+      },
+      {
+        "interval": "1d",
+        "rows_written": 0,
+        "final_rows_persisted": 517
+      },
+      {
+        "interval": "1week",
+        "rows_written": 0,
+        "final_rows_persisted": 75
+      },
+      {
+        "interval": "1month",
+        "rows_written": 0,
+        "final_rows_persisted": 18
+      }
+    ]
+  }
+}

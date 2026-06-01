@@ -1,0 +1,19 @@
+{
+  "cash_usd": 9800.0,
+  "dca_btc_units": 0.002740117042508377,
+  "dca_avg_entry_price": 72989.58288909974,
+  "open_swing_positions": [],
+  "last_mark_price": 70992.1,
+  "peak_equity": 10000.0,
+  "realized_pnl_usd": 0.0,
+  "total_fees_usd": 0.2,
+  "total_spread_cost_usd": 0.1,
+  "total_slippage_cost_usd": 0.1,
+  "updated_at": "2026-06-01T16:02:04+00:00",
+  "latest_dca_buy_price": 71467.63623999999,
+  "recent_signal_keys": [
+    "2026-06-01T03:01:00+00:00|buy|BTC-USD|100.0000000000|73725.6400000000||initial_dca_entry|DCAStrategy|dca_units=0.0013536702|dca_avg=73873.2388788789|dca_anchor=73799.3656400000|swing=",
+    "2026-06-01T10:28:00+00:00|buy|BTC-USD|50.0000000000|72578.8900000000||price_drop_dca_entry|DCAStrategy|dca_units=0.0020411993|dca_avg=73486.2103105005|dca_anchor=72651.4688900000|swing=",
+    "2026-06-01T14:29:00+00:00|buy|BTC-USD|50.0000000000|71396.2400000000||price_drop_dca_entry|DCAStrategy|dca_units=0.0027401170|dca_avg=72989.5828890997|dca_anchor=71467.6362400000|swing="
+  ]
+}

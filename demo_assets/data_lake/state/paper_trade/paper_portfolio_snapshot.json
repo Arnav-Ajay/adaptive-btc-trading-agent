@@ -1,0 +1,31 @@
+{
+  "recorded_at": "2026-06-01T16:02:04+00:00",
+  "cycle": 23,
+  "regime": "sideways",
+  "strategy_name": "HybridStrategy",
+  "summary": "equity_usd=9994.53, cash_usd=9800.00, btc_units=0.002740, drawdown=0.05%",
+  "snapshot": {
+    "cash_usd": 9800.0,
+    "btc_units": 0.002740117042508377,
+    "equity_usd": 9994.526663093458,
+    "drawdown_percent": 0.0547333690654159,
+    "avg_entry_price": 72989.58288909974,
+    "last_mark_price": 70992.1,
+    "dca_btc_units": 0.002740117042508377,
+    "swing_btc_units": 0,
+    "realized_pnl_usd": 0.0,
+    "total_fees_usd": 0.2,
+    "total_spread_cost_usd": 0.1,
+    "total_slippage_cost_usd": 0.1
+  },
+  "llm_review": {
+    "enabled": false,
+    "used": false,
+    "status": "no_signals",
+    "summary": "No signals to review",
+    "action_count": 0,
+    "decision": null,
+    "decision_present": false,
+    "decision_valid": false
+  }
+}

@@ -12,6 +12,7 @@ build/
 *.pyc
 logs
 data_lake/
+!demo_assets/data_lake/
 .*
 secrets/
 archive/
