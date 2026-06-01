@@ -23,11 +23,14 @@ def main() -> int:
     configure_logging(config.logging.level, service_name="worker")
 
     ingestion_state = StateStore(config.ingestion.state_path).load()
-    ingestion_ok = is_state_fresh(
-        last_successful_run_at=ingestion_state.last_successful_run_at,
-        max_staleness_minutes=config.ingestion.health_max_staleness_minutes,
-        now=datetime.now(UTC),
-    )
+    if config.demo_mode:
+        ingestion_ok = True
+    else:
+        ingestion_ok = is_state_fresh(
+            last_successful_run_at=ingestion_state.last_successful_run_at,
+            max_staleness_minutes=config.ingestion.health_max_staleness_minutes,
+            now=datetime.now(UTC),
+        )
 
     latest_cycle_at = _latest_cycle_timestamp(Path(config.execution.paper_cycle_log_path))
     trading_ok = is_state_fresh(
@@ -39,14 +42,14 @@ def main() -> int:
     if ingestion_ok and trading_ok:
         logger.info(
             "Worker healthcheck passed: ingestion_at=%s trading_at=%s",
-            ingestion_state.last_successful_run_at,
+            "demo_mode_skipped" if config.demo_mode else ingestion_state.last_successful_run_at,
             latest_cycle_at,
         )
         return 0
 
     logger.error(
         "Worker healthcheck failed: ingestion_at=%s trading_at=%s",
-        ingestion_state.last_successful_run_at,
+        "demo_mode_skipped" if config.demo_mode else ingestion_state.last_successful_run_at,
         latest_cycle_at,
     )
     return 1

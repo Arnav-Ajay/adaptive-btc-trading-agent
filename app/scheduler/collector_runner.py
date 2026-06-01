@@ -190,6 +190,9 @@ def run() -> None:
     if not config.ingestion.enabled:
         logger.info("Ingestion service is disabled by configuration")
         return
+    if config.demo_mode:
+        logger.info("Ingestion service is disabled in demo mode because parquet demo data is used")
+        return
 
     service = CoinbaseIngestionService(config=config)
     scheduler = BlockingScheduler(timezone="UTC")

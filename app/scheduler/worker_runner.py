@@ -39,6 +39,18 @@ def _safe_worker_cycle(service: CoinbaseIngestionService, config, run_lock: thre
         run_lock.release()
 
 
+def _safe_demo_cycle(run_lock: threading.Lock) -> None:
+    """Run one parquet-backed trading cycle without Coinbase ingestion."""
+    logger = logging.getLogger(__name__)
+    if not run_lock.acquire(blocking=False):
+        logger.warning("Skipping demo worker cycle because another trading cycle is already in progress")
+        return
+    try:
+        run_cycle(config=load_config())
+    finally:
+        run_lock.release()
+
+
 def _maybe_run_startup_catch_up(
     *,
     config,
@@ -103,26 +115,30 @@ def run() -> None:
         logger.info("Combined worker is disabled because ingestion is disabled by configuration")
         return
 
-    service = CoinbaseIngestionService(config=config)
     run_lock = threading.Lock()
     instance_id = _instance_id()
     last_weekly_report_key: str | None = None
     first_run_at = _next_boundary(config.ingestion.schedule_minutes)
+    service: CoinbaseIngestionService | None = None
+    if not config.demo_mode:
+        service = CoinbaseIngestionService(config=config)
 
     logger.info(
         (
             "Starting combined worker instance=%s provider=%s symbol=%s "
-            "interval=%s cadence=%s first_run=%s scheduler=exact_boundary_loop"
+            "interval=%s cadence=%s first_run=%s scheduler=exact_boundary_loop demo_mode=%s"
         ),
         instance_id,
-        config.ingestion.provider,
+        "parquet_demo" if config.demo_mode else config.ingestion.provider,
         config.trading.symbol,
         config.ingestion.interval,
         config.ingestion.schedule_minutes,
         first_run_at.isoformat(),
+        config.demo_mode,
     )
 
-    _maybe_run_startup_catch_up(config=config, service=service, run_lock=run_lock)
+    if not config.demo_mode and service is not None:
+        _maybe_run_startup_catch_up(config=config, service=service, run_lock=run_lock)
 
     while True:
         config = load_config()
@@ -149,7 +165,11 @@ def run() -> None:
             )
 
         try:
-            _safe_worker_cycle(service, config, run_lock)
+            if config.demo_mode:
+                _safe_demo_cycle(run_lock)
+            else:
+                assert service is not None
+                _safe_worker_cycle(service, config, run_lock)
             refreshed_config = load_config()
             should_send, report_key = should_send_weekly_report(
                 now=datetime.now(UTC),

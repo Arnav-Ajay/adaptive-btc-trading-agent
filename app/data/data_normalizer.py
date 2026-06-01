@@ -31,6 +31,8 @@ class MarketDataService:
 
         latest_candle = candles[-1].timestamp.astimezone(UTC)
         staleness_minutes = (datetime.now(UTC) - latest_candle).total_seconds() / 60
+        if self.config.demo_mode:
+            return True, f"demo_mode_skip_staleness:{staleness_minutes:.1f}m"
         if staleness_minutes > self.config.data.max_data_staleness_minutes:
             return False, f"stale_data:{staleness_minutes:.1f}m"
 

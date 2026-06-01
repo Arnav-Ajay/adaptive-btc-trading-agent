@@ -368,6 +368,7 @@ def _apply_env_overrides(base_config: dict[str, Any], env: dict[str, Any]) -> di
     )
 
     merged = dict(base_config)
+    merged["demo_mode"] = _parse_bool(env.get("DEMO_MODE"), bool(base_config.get("demo_mode", False)))
     merged["trading"] = trading
     merged["data"] = data
     merged["ingestion"] = ingestion

@@ -34,6 +34,9 @@ def main() -> int:
     """Run the ingestion healthcheck."""
     config = load_config()
     configure_logging(config.logging.level, service_name="ingestion")
+    if config.demo_mode:
+        logger.info("Ingestion healthcheck skipped in demo mode")
+        return 0
     state = StateStore(config.ingestion.state_path).load()
     if is_state_fresh(
         last_successful_run_at=state.last_successful_run_at,

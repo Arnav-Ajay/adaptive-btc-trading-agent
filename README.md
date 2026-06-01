@@ -1,104 +1,92 @@
 # Adaptive BTC Trading Agent
 
-A research-grade crypto trading system designed to:
+Adaptive BTC Trading Agent is a parquet-backed paper-trading, backtesting, and simulation system for BTC-USD.
 
-- simulate realistic execution (fees, spread, slippage)
-- evaluate strategies through replayable backtests
-- iterate on strategy logic using structured experimentation
+Core properties:
+- parquet market-data lake
+- deterministic paper execution with fees, spread, and slippage
+- unified strategy stack across paper trading, backtesting, and simulation
+- dashboard and JSON API for runtime inspection
 
-This is not a signal bot.
+Authoritative docs:
+- [docs/01_architecture.md](docs/01_architecture.md)
+- [docs/02_strategy_specification.md](docs/02_strategy_specification.md)
+- [docs/03_metrics_reference.md](docs/03_metrics_reference.md)
+- [docs/04_llm_architecture.md](docs/04_llm_architecture.md)
+- [docs/05_future_work.md](docs/05_future_work.md)
 
-This is a **trading system framework**.
+## Demo Mode
 
-## Philosophy
+Demo mode runs the project without:
+- Coinbase
+- OpenAI
+- Google Sheets
+- Gmail
+- Telegram
 
-Most trading systems fail because:
+It uses the bundled parquet snapshot in [demo_assets](demo_assets/README.md) and keeps production behavior unchanged when disabled.
 
-- they ignore execution costs
-- they overfit indicators
-- they lack reproducibility
+### Demo Mode Setup
 
-This system focuses on:
+1. Copy `.env.example` to `.env`.
+2. Set these values in `.env`:
 
-- execution realism
-- deterministic replay
-- structured strategy evolution
-
-## What Makes This Different
-
-- Canonical 1m market data lake (parquet-based)
-- Deterministic execution model:
-  - fees
-  - spread
-  - slippage
-- Unified pipeline:
-  - live trading
-  - backtesting
-  - simulation
-- Strategy decomposition:
-  - DCA (accumulation)
-  - Swing (momentum)
-- Full decision trace logging
-
-## Strategy (Current State)
-
-The system currently implements:
-
-- DCA (base allocation / accumulation)
-- Swing trading (legacy momentum + ATR risk control baseline)
-- Pullback trend trading (structure-aware active layer)
-- Deterministic selector-first `pullback_hybrid` profile
-- Regime detection (EMA + RSI + recent structure context)
-
-Important:
-
-The system is **functionally correct but not yet optimized for edge**.
-
-Backtests show:
-
-- execution realism is working
-- selector-based `pullback_hybrid` is currently outperforming the legacy hybrid and DCA baselines on the latest comparison window
-- strategy edge is still being improved
-- the optional LLM overlay is score-based and experimental, with modes for hard filtering, soft filtering, and weighted exposure
-
-## Capabilities
-
-- Paper trading with full state persistence
-- Backtesting with replay engine
-- Simulation with parameter sweeps
-- Execution cost modeling
-- Trade ledger + decision logs
-- Deterministic per-cycle selector traces for `pullback_hybrid`
-- Optional score-based LLM overlay for trade review and replay experiments
-
-## Architecture
-
-High-level:
-
-Coinbase → Ingestion → Parquet Data Lake → Trading Engine → API/UI
-
-See full details: [`docs/architecture.md`](docs/architecture.md)
-
-## Quick Start
-
-```bash
-docker compose up --build -d
+```dotenv
+DEMO_MODE=true
+GOOGLE_SHEETS_ENABLED=false
+LLM_ENABLED=false
+GMAIL_ENABLED=false
+TELEGRAM_ENABLED=false
 ```
 
-Make sure Docker Engine is already running
+3. Bootstrap the bundled demo lake into the runtime `data_lake/`:
 
-## First Startup
+```bash
+python scripts/bootstrap_demo_data.py --force
+```
 
-Prerequisite :
-1. coinbase account to get the api key -> `.env`
-2. docker installed
+4. Start the stack:
 
-Canonical first-run flow:
+```bash
+docker compose up -d --build
+```
 
-1. Clone the repository.
-2. Copy `.env.example` to `.env`.
-3. Fill the required values in `.env`.
-4. Install dependencies, primarily for backfill:
+5. Open the dashboard:
+
+```text
+http://localhost:8000
+```
+
+### Demo Mode Behavior
+
+- the dashboard reads bundled parquet and state artifacts
+- backtesting reads bundled parquet
+- simulation reads bundled parquet
+- the worker skips Coinbase ingestion and runs scheduled parquet-backed trading cycles only
+- the paper broker, strategies, and execution model are unchanged
+
+## Full Mode
+
+Full mode uses the real ingestion path and optional integrations.
+
+### Full Mode Setup
+
+1. Copy `.env.example` to `.env`.
+2. Set:
+
+```dotenv
+DEMO_MODE=false
+COINBASE_API_KEY=...
+COINBASE_API_SECRET=...
+```
+
+3. Optionally enable:
+- `GOOGLE_SHEETS_ENABLED=true`
+- `LLM_ENABLED=true`
+- `GMAIL_ENABLED=true`
+- `TELEGRAM_ENABLED=true`
+
+4. Install Python dependencies if you plan to run one-off bootstrap/backfill utilities locally:
 
 ```bash
 python -m venv .venv
@@ -106,40 +94,41 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-5. Run the historical backfill:
+5. If starting from an empty lake, backfill historical data first:
 
 ```bash
 python -m app.ingestion.backfill --start 2026-01-01T00:00:00Z
 ```
 
-6. Build the Docker services:
+6. Start the Docker services:
 
 ```bash
 docker compose up -d --build
 ```
-7. Go to `http://localhost:8000`
 
-## Current Docs
+## Runtime Notes
 
-- [docs/architecture.md](docs/architecture.md)
-- [docs/current-flow.md](docs/current-flow.md)
-- [docs/llm-runtime-logic.md](docs/llm-runtime-logic.md)
-- [docs/llm-optional-overlay.md](docs/llm-optional-overlay.md)
-- [docs/metrics.md](docs/metrics.md)
-- [docs/pullback-strategy-spec.md](docs/pullback-strategy-spec.md)
-- [docs/strategy-selector-contract.md](docs/strategy-selector-contract.md)
-- [docs/strategy-pivot-plan.md](docs/strategy-pivot-plan.md)
-- [docs/strategies.md](docs/strategies.md)
-- [docs/strategy-growth.md](docs/strategy-growth.md)
+- `dashboard-api` serves the UI and JSON endpoints on port `8000`
+- `market-execution-worker` runs the scheduled worker
+- in production mode the worker runs `Coinbase ingestion -> parquet update -> trading cycle`
+- in demo mode the worker runs `trading cycle only` against the local parquet snapshot
 
-## Next Evolution
+## Useful Commands
 
-- regime-aware strategy gating
-- improved entry quality
-- structured exits (TP / trailing stops)
-- reduced trade frequency
-- probabilistic decision frameworks
-- llm based decision framework
-- score-based LLM overlay experiments
-- config input from google sheets
-- telegram message at every trade (Buy/Sell)
+Preview the weekly report:
+
+```bash
+python -m app.monitoring.weekly_report_runner
+```
+
+Send the weekly report:
+
+```bash
+python -m app.monitoring.weekly_report_runner --send
+```
+
+Run a one-off paper-trading cycle locally:
+
+```bash
+python -m app.main
+```

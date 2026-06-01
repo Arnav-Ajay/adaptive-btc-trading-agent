@@ -146,6 +146,7 @@ class AppConfig:
     execution: ExecutionConfig
     env: dict[str, str]
     cache_path: str
+    demo_mode: bool = False
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> "AppConfig":
@@ -161,4 +162,5 @@ class AppConfig:
             execution=ExecutionConfig(**data.get("execution", {})),
             env=data.get("env", {}),
             cache_path=data.get("cache_path", "config/config_cache.json"),
+            demo_mode=bool(data.get("demo_mode", False)),
         )
