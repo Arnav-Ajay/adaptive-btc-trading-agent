@@ -93,6 +93,11 @@ def run_cycle(config: AppConfig | None = None) -> None:
             execution_results=stop_results,
             summary=summary,
         )
+        notifier.notify_trade_fills(
+            decision_owner_strategy="StopLossExit",
+            execution_results=stop_results,
+            snapshot=snapshot,
+        )
         logger.warning("Skipping new entries for this cycle because a stop-loss exit was triggered")
         return
     context.available_cash_usd = snapshot.cash_usd
@@ -185,6 +190,11 @@ def run_cycle(config: AppConfig | None = None) -> None:
         signal_count=len(validated_signals),
         execution_results=execution_results,
         summary=summary,
+    )
+    notifier.notify_trade_fills(
+        decision_owner_strategy=strategy_outcome.strategy_name,
+        execution_results=execution_results,
+        snapshot=latest_snapshot,
     )
     logger.info("Completed trading cycle")
 

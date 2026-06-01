@@ -6,18 +6,19 @@ import logging
 import os
 import socket
 import threading
-import time
 from datetime import UTC, datetime, timedelta
 
 from app.config.settings import load_config
 from app.ingestion.collector import CoinbaseIngestionService
 from app.main import run_cycle
+from app.monitoring.alerts import NotificationManager
 from app.monitoring.logger import configure_logging
+from app.monitoring.weekly_report import should_send_weekly_report
 from app.scheduler.collector_runner import (
     _find_recent_gap_start,
     _has_bootstrap_data,
 )
-from app.scheduler.job_runner import seconds_until_next_interval
+from app.scheduler.job_runner import sleep_until_datetime
 
 
 def _instance_id() -> str:
@@ -105,6 +106,7 @@ def run() -> None:
     service = CoinbaseIngestionService(config=config)
     run_lock = threading.Lock()
     instance_id = _instance_id()
+    last_weekly_report_key: str | None = None
     first_run_at = _next_boundary(config.ingestion.schedule_minutes)
 
     logger.info(
@@ -123,9 +125,9 @@ def run() -> None:
     _maybe_run_startup_catch_up(config=config, service=service, run_lock=run_lock)
 
     while True:
+        config = load_config()
         target_run_at = _next_boundary(config.ingestion.schedule_minutes)
-        sleep_seconds = seconds_until_next_interval(config.ingestion.schedule_minutes)
-        time.sleep(max(sleep_seconds, 0.0))
+        sleep_until_datetime(target_run_at, now_provider=lambda: datetime.now(UTC))
 
         woke_at = datetime.now(UTC)
         drift_seconds = max((woke_at - target_run_at).total_seconds(), 0.0)
@@ -148,6 +150,19 @@ def run() -> None:
 
         try:
             _safe_worker_cycle(service, config, run_lock)
+            refreshed_config = load_config()
+            should_send, report_key = should_send_weekly_report(
+                now=datetime.now(UTC),
+                config=refreshed_config,
+                last_sent_key=last_weekly_report_key,
+            )
+            if should_send:
+                try:
+                    NotificationManager(refreshed_config).send_weekly_report(now=datetime.now(UTC))
+                except Exception:
+                    logger.exception("Weekly Gmail report failed for key=%s", report_key)
+                finally:
+                    last_weekly_report_key = report_key
             logger.info(
                 "Worker cycle executed successfully: instance=%s scheduled_run_time=%s",
                 instance_id,
