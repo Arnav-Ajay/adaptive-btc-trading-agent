@@ -87,6 +87,17 @@ def _path_has_contents(path: Path) -> bool:
     return path.exists() and any(path.iterdir())
 
 
+def _clear_directory_contents(path: Path) -> None:
+    """Remove all children of a directory without removing the directory itself."""
+    if not path.exists():
+        return
+    for child in path.iterdir():
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+
+
 def _maybe_bootstrap_demo_data(env: dict[str, Any], merged_config: dict[str, Any]) -> None:
     """Populate the runtime data_lake from bundled demo assets when demo mode is enabled."""
     if not _parse_bool(env.get("DEMO_MODE"), bool(merged_config.get("demo_mode", False))):
@@ -106,9 +117,14 @@ def _maybe_bootstrap_demo_data(env: dict[str, Any], merged_config: dict[str, Any
         )
         return
 
-    if data_lake_path.exists():
-        shutil.rmtree(data_lake_path)
-    shutil.copytree(bundled_demo_lake, data_lake_path)
+    data_lake_path.mkdir(parents=True, exist_ok=True)
+    _clear_directory_contents(data_lake_path)
+    for child in bundled_demo_lake.iterdir():
+        destination = data_lake_path / child.name
+        if child.is_dir():
+            shutil.copytree(child, destination)
+        else:
+            shutil.copy2(child, destination)
     logger.info("Bootstrapped demo data lake from %s to %s", bundled_demo_lake, data_lake_path)
 
 

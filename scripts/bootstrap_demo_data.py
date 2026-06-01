@@ -12,6 +12,17 @@ DEFAULT_SOURCE = REPO_ROOT / "demo_assets" / "data_lake"
 DEFAULT_TARGET = REPO_ROOT / "data_lake"
 
 
+def _clear_directory_contents(path: Path) -> None:
+    """Remove all children of a directory without removing the directory itself."""
+    if not path.exists():
+        return
+    for child in path.iterdir():
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+
+
 def main(argv: list[str] | None = None) -> int:
     """Copy the bundled demo lake into place for local or Docker demo mode."""
     parser = argparse.ArgumentParser(description="Bootstrap bundled parquet demo data into data_lake/")
@@ -28,9 +39,16 @@ def main(argv: list[str] | None = None) -> int:
     if target.exists():
         if not args.force:
             raise FileExistsError(f"demo_data_target_exists:{target}")
-        shutil.rmtree(target)
+        _clear_directory_contents(target)
+    else:
+        target.mkdir(parents=True, exist_ok=True)
 
-    shutil.copytree(source, target)
+    for child in source.iterdir():
+        destination = target / child.name
+        if child.is_dir():
+            shutil.copytree(child, destination)
+        else:
+            shutil.copy2(child, destination)
     print(f"Bootstrapped demo data: {source} -> {target}")
     return 0
 
