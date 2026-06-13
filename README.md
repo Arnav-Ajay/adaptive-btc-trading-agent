@@ -1,5 +1,7 @@
 # Adaptive BTC Trading Agent
 
+Checkout the video overview here: https://youtu.be/jNmiMrsSSwA
+
 Adaptive BTC Trading Agent is a parquet-backed paper-trading, backtesting, and simulation system for BTC-USD.
 
 Core properties:
@@ -14,6 +16,14 @@ Authoritative docs:
 - [docs/03_metrics_reference.md](docs/03_metrics_reference.md)
 - [docs/04_llm_architecture.md](docs/04_llm_architecture.md)
 - [docs/05_future_work.md](docs/05_future_work.md)
+
+## Architechture
+
+![`System Architecture`](docs\architecture_diagram.png)
+
+## Strategies
+
+![`Strategies`](docs\strategy_diagram.png)
 
 ## Demo Mode
 
