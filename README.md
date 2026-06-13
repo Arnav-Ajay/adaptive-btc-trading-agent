@@ -19,11 +19,11 @@ Authoritative docs:
 
 ## Architechture
 
-![`System Architecture`](docs\architecture_diagram.png)
+![`System Architecture`](./docs/architecture_diagram.png)
 
 ## Strategies
 
-![`Strategies`](docs\strategy_diagram.png)
+![`Strategies`](./docs/strategy_diagram.png)
 
 ## Demo Mode
 
